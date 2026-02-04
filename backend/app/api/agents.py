@@ -57,7 +57,9 @@ async def _ensure_gateway_session(agent_name: str) -> tuple[str, str | None]:
 
 def _with_computed_status(agent: Agent) -> Agent:
     now = datetime.utcnow()
-    if agent.last_seen_at and now - agent.last_seen_at > OFFLINE_AFTER:
+    if agent.last_seen_at is None:
+        agent.status = "provisioning"
+    elif now - agent.last_seen_at > OFFLINE_AFTER:
         agent.status = "offline"
     return agent
 
@@ -96,6 +98,7 @@ async def create_agent(
     auth: AuthContext = Depends(require_admin_auth),
 ) -> Agent:
     agent = Agent.model_validate(payload)
+    agent.status = "provisioning"
     raw_token = generate_agent_token()
     agent.agent_token_hash = hash_agent_token(raw_token)
     session_key, session_error = await _ensure_gateway_session(agent.name)
@@ -152,6 +155,11 @@ def update_agent(
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     updates = payload.model_dump(exclude_unset=True)
+    if "status" in updates:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="status is controlled by agent heartbeat",
+        )
     for key, value in updates.items():
         setattr(agent, key, value)
     agent.updated_at = datetime.utcnow()
@@ -175,6 +183,8 @@ def heartbeat_agent(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     if payload.status:
         agent.status = payload.status
+    elif agent.status == "provisioning":
+        agent.status = "online"
     agent.last_seen_at = datetime.utcnow()
     agent.updated_at = datetime.utcnow()
     _record_heartbeat(session, agent)
@@ -194,7 +204,7 @@ async def heartbeat_or_create_agent(
     if agent is None:
         if actor.actor_type == "agent":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-        agent = Agent(name=payload.name, status=payload.status or "online")
+        agent = Agent(name=payload.name, status="provisioning")
         raw_token = generate_agent_token()
         agent.agent_token_hash = hash_agent_token(raw_token)
         session_key, session_error = await _ensure_gateway_session(agent.name)
@@ -261,6 +271,8 @@ async def heartbeat_or_create_agent(
         session.commit()
     if payload.status:
         agent.status = payload.status
+    elif agent.status == "provisioning":
+        agent.status = "online"
     agent.last_seen_at = datetime.utcnow()
     agent.updated_at = datetime.utcnow()
     _record_heartbeat(session, agent)

@@ -9,13 +9,6 @@ import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 const apiBase =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") ||
@@ -26,18 +19,11 @@ type Agent = {
   name: string;
 };
 
-const statusOptions = [
-  { value: "online", label: "Online" },
-  { value: "busy", label: "Busy" },
-  { value: "offline", label: "Offline" },
-];
-
 export default function NewAgentPage() {
   const router = useRouter();
   const { getToken, isSignedIn } = useAuth();
 
   const [name, setName] = useState("");
-  const [status, setStatus] = useState("online");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,7 +45,7 @@ export default function NewAgentPage() {
           "Content-Type": "application/json",
           Authorization: token ? `Bearer ${token}` : "",
         },
-        body: JSON.stringify({ name: trimmed, status }),
+        body: JSON.stringify({ name: trimmed }),
       });
       if (!response.ok) {
         throw new Error("Unable to create agent.");
@@ -80,8 +66,6 @@ export default function NewAgentPage() {
           <p className="text-sm text-muted">Sign in to create an agent.</p>
           <SignInButton
             mode="modal"
-            afterSignInUrl="/agents/new"
-            afterSignUpUrl="/agents/new"
             forceRedirectUrl="/agents/new"
             signUpForceRedirectUrl="/agents/new"
           >
@@ -100,7 +84,7 @@ export default function NewAgentPage() {
               Register an agent.
             </h1>
             <p className="text-sm text-muted">
-              Add an agent to your mission control roster.
+              Agents start in provisioning until they check in.
             </p>
           </div>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -112,21 +96,6 @@ export default function NewAgentPage() {
                 placeholder="e.g. Deploy bot"
                 disabled={isLoading}
               />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-strong">Status</label>
-              <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select status" />
-                </SelectTrigger>
-                <SelectContent>
-                  {statusOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
             {error ? (
               <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-3 text-xs text-muted">

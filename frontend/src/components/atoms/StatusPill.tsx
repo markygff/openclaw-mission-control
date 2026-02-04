@@ -12,6 +12,7 @@ const STATUS_STYLES: Record<
   done: "success",
   online: "success",
   busy: "warning",
+  provisioning: "warning",
   offline: "outline",
 };
 

@@ -14,8 +14,6 @@ export function LandingHero() {
           <SignedOut>
             <SignInButton
               mode="modal"
-              afterSignInUrl="/boards"
-              afterSignUpUrl="/boards"
               forceRedirectUrl="/boards"
               signUpForceRedirectUrl="/boards"
             >

@@ -9,13 +9,6 @@ import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
 import { DashboardShell } from "@/components/templates/DashboardShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 const apiBase =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, "") ||
@@ -24,14 +17,7 @@ const apiBase =
 type Agent = {
   id: string;
   name: string;
-  status: string;
 };
-
-const statusOptions = [
-  { value: "online", label: "Online" },
-  { value: "busy", label: "Busy" },
-  { value: "offline", label: "Offline" },
-];
 
 export default function EditAgentPage() {
   const { getToken, isSignedIn } = useAuth();
@@ -42,7 +28,6 @@ export default function EditAgentPage() {
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [name, setName] = useState("");
-  const [status, setStatus] = useState("online");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,7 +46,6 @@ export default function EditAgentPage() {
       const data = (await response.json()) as Agent;
       setAgent(data);
       setName(data.name);
-      setStatus(data.status);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -92,7 +76,7 @@ export default function EditAgentPage() {
           "Content-Type": "application/json",
           Authorization: token ? `Bearer ${token}` : "",
         },
-        body: JSON.stringify({ name: trimmed, status }),
+        body: JSON.stringify({ name: trimmed }),
       });
       if (!response.ok) {
         throw new Error("Unable to update agent.");
@@ -112,8 +96,6 @@ export default function EditAgentPage() {
           <p className="text-sm text-muted">Sign in to edit agents.</p>
           <SignInButton
             mode="modal"
-            afterSignInUrl={`/agents/${agentId}/edit`}
-            afterSignUpUrl={`/agents/${agentId}/edit`}
             forceRedirectUrl={`/agents/${agentId}/edit`}
             signUpForceRedirectUrl={`/agents/${agentId}/edit`}
           >
@@ -132,7 +114,7 @@ export default function EditAgentPage() {
               {agent?.name ?? "Agent"}
             </h1>
             <p className="text-sm text-muted">
-              Update the agent name and status.
+              Status is controlled by agent heartbeat.
             </p>
           </div>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -144,21 +126,6 @@ export default function EditAgentPage() {
                 placeholder="e.g. Deploy bot"
                 disabled={isLoading}
               />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-strong">Status</label>
-              <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select status" />
-                </SelectTrigger>
-                <SelectContent>
-                  {statusOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
             </div>
             {error ? (
               <div className="rounded-lg border border-[color:var(--border)] bg-[color:var(--surface-muted)] p-3 text-xs text-muted">

@@ -70,8 +70,6 @@ export default function NewBoardPage() {
           <p className="text-sm text-muted">Sign in to create a board.</p>
           <SignInButton
             mode="modal"
-            afterSignInUrl="/boards/new"
-            afterSignUpUrl="/boards/new"
             forceRedirectUrl="/boards/new"
             signUpForceRedirectUrl="/boards/new"
           >

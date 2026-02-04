@@ -20,8 +20,6 @@ export default function DashboardPage() {
           </p>
           <SignInButton
             mode="modal"
-            afterSignInUrl="/boards"
-            afterSignUpUrl="/boards"
             forceRedirectUrl="/boards"
             signUpForceRedirectUrl="/boards"
           >

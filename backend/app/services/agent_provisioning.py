@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
-from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
 from app.core.config import settings
 from app.integrations.openclaw_gateway import ensure_session, send_message
@@ -38,7 +38,7 @@ def _slugify(value: str) -> str:
 def _template_env() -> Environment:
     return Environment(
         loader=FileSystemLoader(_templates_root()),
-        autoescape=False,
+        autoescape=select_autoescape(default=True),
         undefined=StrictUndefined,
         keep_trailing_newline=True,
     )

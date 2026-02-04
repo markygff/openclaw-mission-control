@@ -8,7 +8,7 @@ from sqlmodel import SQLModel
 
 class AgentBase(SQLModel):
     name: str
-    status: str = "online"
+    status: str = "provisioning"
 
 
 class AgentCreate(AgentBase):
@@ -23,7 +23,7 @@ class AgentUpdate(SQLModel):
 class AgentRead(AgentBase):
     id: UUID
     openclaw_session_id: str | None = None
-    last_seen_at: datetime
+    last_seen_at: datetime | None
     created_at: datetime
     updated_at: datetime
 

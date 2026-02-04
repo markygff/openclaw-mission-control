@@ -112,8 +112,6 @@ export default function BoardsPage() {
           <p className="text-sm text-muted">Sign in to view boards.</p>
           <SignInButton
             mode="modal"
-            afterSignInUrl="/boards"
-            afterSignUpUrl="/boards"
             forceRedirectUrl="/boards"
             signUpForceRedirectUrl="/boards"
           >

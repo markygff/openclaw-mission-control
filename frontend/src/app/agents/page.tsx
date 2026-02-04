@@ -266,8 +266,6 @@ export default function AgentsPage() {
           <p className="text-sm text-muted">Sign in to view agents.</p>
           <SignInButton
             mode="modal"
-            afterSignInUrl="/agents"
-            afterSignUpUrl="/agents"
             forceRedirectUrl="/agents"
             signUpForceRedirectUrl="/agents"
           >

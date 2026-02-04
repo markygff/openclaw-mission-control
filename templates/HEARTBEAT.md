@@ -7,6 +7,10 @@ If this file is empty, skip heartbeat work.
 - AUTH_TOKEN (agent token)
 - AGENT_NAME
 
+## Schedule
+- Run this heartbeat every 10 minutes.
+- On first boot, send one immediate check-in before the schedule starts.
+
 ## On every heartbeat
 1) Check in:
 ```bash
