@@ -193,7 +193,9 @@ def _with_computed_status(agent: Agent) -> Agent:
 
 
 def _serialize_agent(agent: Agent, main_session_keys: set[str]) -> dict[str, object]:
-    return _to_agent_read(_with_computed_status(agent), main_session_keys).model_dump()
+    return _to_agent_read(
+        _with_computed_status(agent), main_session_keys
+    ).model_dump(mode="json")
 
 
 def _fetch_agent_events(
@@ -318,6 +320,18 @@ async def create_agent(
     board = _require_board(session, payload.board_id)
     gateway, client_config = _require_gateway(session, board)
     data = payload.model_dump()
+    requested_name = (data.get("name") or "").strip()
+    if requested_name:
+        existing = session.exec(
+            select(Agent)
+            .where(Agent.board_id == board.id)
+            .where(col(Agent.name).ilike(requested_name))
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An agent with this name already exists on this board.",
+            )
     if data.get("identity_template") == "":
         data["identity_template"] = None
     if data.get("soul_template") == "":

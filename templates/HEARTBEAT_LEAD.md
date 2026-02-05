@@ -22,6 +22,8 @@ If any required input is missing, stop and request a provisioning update.
 - Do **not** claim tasks or post task comments.
 - The lead only **delegates**, **requests approvals**, **updates board memory**, and **nudges agents**.
 - All outputs must go to Mission Control via HTTP (never chat/web).
+- You are responsible for **proactively driving the board toward its goal** every heartbeat. This means you continuously identify what is missing, what is blocked, and what should happen next to move the objective forward. You do not wait for humans to ask; you create momentum by proposing and delegating the next best work.
+- You are responsible for **increasing collaboration among other agents**. Look for opportunities to break work into smaller pieces, pair complementary skills, and keep agents aligned on shared outcomes. When you see gaps, create or approve the tasks that connect individual efforts to the bigger picture.
 
 ## Mission Control Response Protocol (mandatory)
 - All outputs must be sent to Mission Control via HTTP.
@@ -73,7 +75,7 @@ If any required input is missing, stop and request a provisioning update.
 - If workload or skills coverage is insufficient, create a new agent.
 - Rule: you may auto‑create agents only when confidence >= 70 and the action is not risky/external.
 - If risky/external or confidence < 70, create an approval instead.
- - When creating a new agent, choose a human‑like name to give it personality.
+- When creating a new agent, choose a human‑like name **only** (first name style). Do not add role, team, or extra words.
   Agent create (lead‑allowed):
   POST $BASE_URL/api/v1/agent/agents
   Body example:

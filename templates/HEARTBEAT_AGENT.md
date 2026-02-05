@@ -56,14 +56,19 @@ curl -s "$BASE_URL/api/v1/agent/boards/{BOARD_ID}/tasks?status=in_progress&assig
   -H "X-Agent-Token: {{ auth_token }}"
 ```
 ```bash
+curl -s "$BASE_URL/api/v1/agent/boards/{BOARD_ID}/tasks?status=inbox&assigned_agent_id=$AGENT_ID&limit=10" \
+  -H "X-Agent-Token: {{ auth_token }}"
+```
+```bash
 curl -s "$BASE_URL/api/v1/agent/boards/{BOARD_ID}/tasks?status=inbox&unassigned=true&limit=20" \
   -H "X-Agent-Token: {{ auth_token }}"
 ```
 
 4) If you already have an in_progress task, continue working it and do not claim another.
 
-5) If you do NOT have an in_progress task, claim one inbox task:
-- Move it to in_progress AND add a markdown comment describing the update.
+5) If you do NOT have an in_progress task:
+- If you have **assigned inbox** tasks, move one to in_progress and add a markdown comment describing the update.
+- Else if there are **unassigned inbox** tasks, claim one and move it to in_progress with a comment.
 
 6) Work the task:
 - Post progress comments as you go.
