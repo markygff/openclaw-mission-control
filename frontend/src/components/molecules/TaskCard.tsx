@@ -2,8 +2,11 @@ import { CalendarClock, UserCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
+type TaskStatus = "inbox" | "in_progress" | "review" | "done";
+
 interface TaskCardProps {
   title: string;
+  status?: TaskStatus;
   priority?: string;
   assignee?: string;
   due?: string;
@@ -19,6 +22,7 @@ interface TaskCardProps {
 
 export function TaskCard({
   title,
+  status,
   priority,
   assignee,
   due,
@@ -32,10 +36,13 @@ export function TaskCard({
   onDragEnd,
 }: TaskCardProps) {
   const hasPendingApproval = approvalsPendingCount > 0;
+  const needsLeadReview = status === "review" && !isBlocked && !hasPendingApproval;
   const leftBarClassName = isBlocked
     ? "bg-rose-400"
     : hasPendingApproval
       ? "bg-amber-400"
+      : needsLeadReview
+        ? "bg-indigo-400"
       : null;
   const priorityBadge = (value?: string) => {
     if (!value) return null;
@@ -61,6 +68,7 @@ export function TaskCard({
         isDragging && "opacity-60 shadow-none",
         hasPendingApproval && "border-amber-200 bg-amber-50/40",
         isBlocked && "border-rose-200 bg-rose-50/50",
+        needsLeadReview && "border-indigo-200 bg-indigo-50/30",
       )}
       draggable={draggable}
       onDragStart={onDragStart}
@@ -96,6 +104,12 @@ export function TaskCard({
             <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
               Approval needed · {approvalsPendingCount}
+            </div>
+          ) : null}
+          {needsLeadReview ? (
+            <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+              Waiting for lead review
             </div>
           ) : null}
         </div>

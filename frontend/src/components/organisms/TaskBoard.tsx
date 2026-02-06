@@ -28,6 +28,8 @@ type TaskBoardProps = {
   onTaskMove?: (taskId: string, status: TaskStatus) => void | Promise<void>;
 };
 
+type ReviewBucket = "all" | "approval_needed" | "waiting_lead" | "blocked";
+
 const columns: Array<{
   title: string;
   status: TaskStatus;
@@ -99,6 +101,7 @@ export const TaskBoard = memo(function TaskBoard({
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [activeColumn, setActiveColumn] = useState<TaskStatus | null>(null);
+  const [reviewBucket, setReviewBucket] = useState<ReviewBucket>("all");
 
   const setCardRef = useCallback(
     (taskId: string) => (node: HTMLDivElement | null) => {
@@ -310,6 +313,42 @@ export const TaskBoard = memo(function TaskBoard({
     >
       {columns.map((column) => {
         const columnTasks = grouped[column.status] ?? [];
+        const reviewCounts =
+          column.status === "review"
+            ? columnTasks.reduce(
+                (acc, task) => {
+                  if (task.is_blocked) {
+                    acc.blocked += 1;
+                    return acc;
+                  }
+                  if ((task.approvals_pending_count ?? 0) > 0) {
+                    acc.approval_needed += 1;
+                    return acc;
+                  }
+                  acc.waiting_lead += 1;
+                  return acc;
+                },
+                {
+                  all: columnTasks.length,
+                  approval_needed: 0,
+                  waiting_lead: 0,
+                  blocked: 0,
+                },
+              )
+            : null;
+
+        const filteredTasks =
+          column.status === "review" && reviewBucket !== "all"
+            ? columnTasks.filter((task) => {
+                if (reviewBucket === "blocked") return Boolean(task.is_blocked);
+                if (reviewBucket === "approval_needed")
+                  return (task.approvals_pending_count ?? 0) > 0 && !task.is_blocked;
+                if (reviewBucket === "waiting_lead")
+                  return !task.is_blocked && (task.approvals_pending_count ?? 0) === 0;
+                return true;
+              })
+            : columnTasks;
+
         return (
           <div
             key={column.title}
@@ -335,16 +374,52 @@ export const TaskBoard = memo(function TaskBoard({
                     column.badge,
                   )}
                 >
-                  {columnTasks.length}
+                  {filteredTasks.length}
                 </span>
               </div>
+              {column.status === "review" && reviewCounts ? (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  {(
+                    [
+                      { key: "all", label: "All", count: reviewCounts.all },
+                      {
+                        key: "approval_needed",
+                        label: "Approval needed",
+                        count: reviewCounts.approval_needed,
+                      },
+                      {
+                        key: "waiting_lead",
+                        label: "Lead review",
+                        count: reviewCounts.waiting_lead,
+                      },
+                      { key: "blocked", label: "Blocked", count: reviewCounts.blocked },
+                    ] as const
+                  ).map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => setReviewBucket(option.key)}
+                      className={cn(
+                        "rounded-full border px-2.5 py-1 transition",
+                        reviewBucket === option.key
+                          ? "border-slate-900 bg-slate-900 text-white"
+                          : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50",
+                      )}
+                      aria-pressed={reviewBucket === option.key}
+                    >
+                      {option.label} · {option.count}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
             <div className="rounded-b-xl border border-t-0 border-slate-200 bg-white p-3">
               <div className="space-y-3">
-                {columnTasks.map((task) => (
+                {filteredTasks.map((task) => (
                   <div key={task.id} ref={setCardRef(task.id)}>
                     <TaskCard
                       title={task.title}
+                      status={task.status}
                       priority={task.priority}
                       assignee={task.assignee ?? undefined}
                       due={formatDueDate(task.due_at)}
