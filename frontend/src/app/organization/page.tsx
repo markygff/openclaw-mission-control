@@ -59,19 +59,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DashboardShell } from "@/components/templates/DashboardShell";
+import { formatTimestamp } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
-
-const formatTimestamp = (value?: string | null) => {
-  if (!value) return "—";
-  const date = new Date(`${value}${value.endsWith("Z") ? "" : "Z"}`);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
 
 type AccessScope = "all" | "custom";
 

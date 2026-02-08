@@ -18,21 +18,10 @@ import {
   type listAgentsApiV1AgentsGetResponse,
   useListAgentsApiV1AgentsGet,
 } from "@/api/generated/agents/agents";
+import { formatTimestamp } from "@/lib/formatters";
 import { useOrganizationMembership } from "@/lib/use-organization-membership";
 import { DashboardPageLayout } from "@/components/templates/DashboardPageLayout";
 import { Button } from "@/components/ui/button";
-
-const formatTimestamp = (value?: string | null) => {
-  if (!value) return "—";
-  const date = new Date(`${value}${value.endsWith("Z") ? "" : "Z"}`);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
 
 const maskToken = (value?: string | null) => {
   if (!value) return "—";

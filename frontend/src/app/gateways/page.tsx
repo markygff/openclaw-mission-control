@@ -34,26 +34,9 @@ import {
   useDeleteGatewayApiV1GatewaysGatewayIdDelete,
   useListGatewaysApiV1GatewaysGet,
 } from "@/api/generated/gateways/gateways";
+import { formatTimestamp, truncateText as truncate } from "@/lib/formatters";
 import { useOrganizationMembership } from "@/lib/use-organization-membership";
 import type { GatewayRead } from "@/api/generated/model";
-
-const truncate = (value?: string | null, max = 24) => {
-  if (!value) return "—";
-  if (value.length <= max) return value;
-  return `${value.slice(0, max)}…`;
-};
-
-const formatTimestamp = (value?: string | null) => {
-  if (!value) return "—";
-  const date = new Date(`${value}${value.endsWith("Z") ? "" : "Z"}`);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
 
 export default function GatewaysPage() {
   const { isSignedIn } = useAuth();

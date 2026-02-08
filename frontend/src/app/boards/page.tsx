@@ -25,6 +25,7 @@ import {
   type listBoardGroupsApiV1BoardGroupsGetResponse,
   useListBoardGroupsApiV1BoardGroupsGet,
 } from "@/api/generated/board-groups/board-groups";
+import { formatTimestamp } from "@/lib/formatters";
 import { useOrganizationMembership } from "@/lib/use-organization-membership";
 import type { BoardGroupRead, BoardRead } from "@/api/generated/model";
 import { DashboardSidebar } from "@/components/organisms/DashboardSidebar";
@@ -39,18 +40,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { SignedOutPanel } from "@/components/auth/SignedOutPanel";
-
-const formatTimestamp = (value?: string | null) => {
-  if (!value) return "—";
-  const date = new Date(`${value}${value.endsWith("Z") ? "" : "Z"}`);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
 
 const compactId = (value: string) =>
   value.length > 8 ? `${value.slice(0, 8)}…` : value;

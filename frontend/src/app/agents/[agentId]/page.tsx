@@ -22,6 +22,10 @@ import {
   type listBoardsApiV1BoardsGetResponse,
   useListBoardsApiV1BoardsGet,
 } from "@/api/generated/boards/boards";
+import {
+  formatRelativeTimestamp as formatRelative,
+  formatTimestamp,
+} from "@/lib/formatters";
 import { useOrganizationMembership } from "@/lib/use-organization-membership";
 import type {
   ActivityEventRead,
@@ -40,39 +44,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-
-const parseTimestamp = (value?: string | null) => {
-  if (!value) return null;
-  const hasTz = /[zZ]|[+-]\d\d:\d\d$/.test(value);
-  const normalized = hasTz ? value : `${value}Z`;
-  const date = new Date(normalized);
-  if (Number.isNaN(date.getTime())) return null;
-  return date;
-};
-
-const formatTimestamp = (value?: string | null) => {
-  const date = parseTimestamp(value);
-  if (!date) return "—";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
-
-const formatRelative = (value?: string | null) => {
-  const date = parseTimestamp(value);
-  if (!date) return "—";
-  const diff = Date.now() - date.getTime();
-  const minutes = Math.round(diff / 60000);
-  if (minutes < 1) return "Just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-};
 
 export default function AgentDetailPage() {
   const { isSignedIn } = useAuth();

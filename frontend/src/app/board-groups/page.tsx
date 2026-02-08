@@ -34,18 +34,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { SignedOutPanel } from "@/components/auth/SignedOutPanel";
-
-const formatTimestamp = (value?: string | null) => {
-  if (!value) return "—";
-  const date = new Date(`${value}${value.endsWith("Z") ? "" : "Z"}`);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
+import { formatTimestamp } from "@/lib/formatters";
 
 export default function BoardGroupsPage() {
   const { isSignedIn } = useAuth();

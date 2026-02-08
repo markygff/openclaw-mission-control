@@ -45,20 +45,9 @@ import { BoardChatComposer } from "@/components/BoardChatComposer";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { createExponentialBackoff } from "@/lib/backoff";
 import { apiDatetimeToMs } from "@/lib/datetime";
+import { formatTimestamp } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { usePageActive } from "@/hooks/usePageActive";
-
-const formatTimestamp = (value?: string | null) => {
-  if (!value) return "—";
-  const date = new Date(`${value}${value.endsWith("Z") ? "" : "Z"}`);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-};
 
 const statusLabel = (value?: string | null) => {
   switch (value) {
