@@ -1,15 +1,16 @@
+"""Board memory CRUD and streaming endpoints."""
+
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func
 from sqlmodel import col
-from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import (
@@ -23,16 +24,35 @@ from app.core.time import utcnow
 from app.db.pagination import paginate
 from app.db.session import async_session_maker, get_session
 from app.integrations.openclaw_gateway import GatewayConfig as GatewayClientConfig
-from app.integrations.openclaw_gateway import OpenClawGatewayError, ensure_session, send_message
+from app.integrations.openclaw_gateway import (
+    OpenClawGatewayError,
+    ensure_session,
+    send_message,
+)
 from app.models.agents import Agent
 from app.models.board_memory import BoardMemory
-from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.schemas.board_memory import BoardMemoryCreate, BoardMemoryRead
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.services.mentions import extract_mentions, matches_agent_mention
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
+    from app.models.boards import Board
+
 router = APIRouter(prefix="/boards/{board_id}/memory", tags=["board-memory"])
+MAX_SNIPPET_LENGTH = 800
+STREAM_POLL_SECONDS = 2
+IS_CHAT_QUERY = Query(default=None)
+SINCE_QUERY = Query(default=None)
+BOARD_READ_DEP = Depends(get_board_for_actor_read)
+BOARD_WRITE_DEP = Depends(get_board_for_actor_write)
+SESSION_DEP = Depends(get_session)
+ACTOR_DEP = Depends(require_admin_or_agent)
+_RUNTIME_TYPE_REFERENCES = (UUID,)
 
 
 def _parse_since(value: str | None) -> datetime | None:
@@ -52,10 +72,16 @@ def _parse_since(value: str | None) -> datetime | None:
 
 
 def _serialize_memory(memory: BoardMemory) -> dict[str, object]:
-    return BoardMemoryRead.model_validate(memory, from_attributes=True).model_dump(mode="json")
+    return BoardMemoryRead.model_validate(
+        memory,
+        from_attributes=True,
+    ).model_dump(mode="json")
 
 
-async def _gateway_config(session: AsyncSession, board: Board) -> GatewayClientConfig | None:
+async def _gateway_config(
+    session: AsyncSession,
+    board: Board,
+) -> GatewayClientConfig | None:
     if board.gateway_id is None:
         return None
     gateway = await Gateway.objects.by_id(board.gateway_id).first(session)
@@ -91,9 +117,65 @@ async def _fetch_memory_events(
     if is_chat is not None:
         statement = statement.filter(col(BoardMemory.is_chat) == is_chat)
     statement = statement.filter(col(BoardMemory.created_at) >= since).order_by(
-        col(BoardMemory.created_at)
+        col(BoardMemory.created_at),
     )
     return await statement.all(session)
+
+
+async def _send_control_command(
+    *,
+    session: AsyncSession,
+    board: Board,
+    actor: ActorContext,
+    config: GatewayClientConfig,
+    command: str,
+) -> None:
+    pause_targets: list[Agent] = await Agent.objects.filter_by(
+        board_id=board.id,
+    ).all(
+        session,
+    )
+    for agent in pause_targets:
+        if actor.actor_type == "agent" and actor.agent and agent.id == actor.agent.id:
+            continue
+        if not agent.openclaw_session_id:
+            continue
+        try:
+            await _send_agent_message(
+                session_key=agent.openclaw_session_id,
+                config=config,
+                agent_name=agent.name,
+                message=command,
+                deliver=True,
+            )
+        except OpenClawGatewayError:
+            continue
+
+
+def _chat_targets(
+    *,
+    agents: list[Agent],
+    mentions: set[str],
+    actor: ActorContext,
+) -> dict[str, Agent]:
+    targets: dict[str, Agent] = {}
+    for agent in agents:
+        if agent.is_board_lead:
+            targets[str(agent.id)] = agent
+            continue
+        if mentions and matches_agent_mention(agent, mentions):
+            targets[str(agent.id)] = agent
+    if actor.actor_type == "agent" and actor.agent:
+        targets.pop(str(actor.agent.id), None)
+    return targets
+
+
+def _actor_display_name(actor: ActorContext) -> str:
+    if actor.actor_type == "agent" and actor.agent:
+        return actor.agent.name
+    if actor.user:
+        return actor.user.preferred_name or actor.user.name or "User"
+    return "User"
 
 
 async def _notify_chat_targets(
@@ -114,44 +196,27 @@ async def _notify_chat_targets(
     # Special-case control commands to reach all board agents.
     # These are intended to be parsed verbatim by agent runtimes.
     if command in {"/pause", "/resume"}:
-        pause_targets: list[Agent] = await Agent.objects.filter_by(board_id=board.id).all(session)
-        for agent in pause_targets:
-            if actor.actor_type == "agent" and actor.agent and agent.id == actor.agent.id:
-                continue
-            if not agent.openclaw_session_id:
-                continue
-            try:
-                await _send_agent_message(
-                    session_key=agent.openclaw_session_id,
-                    config=config,
-                    agent_name=agent.name,
-                    message=command,
-                    deliver=True,
-                )
-            except OpenClawGatewayError:
-                continue
+        await _send_control_command(
+            session=session,
+            board=board,
+            actor=actor,
+            config=config,
+            command=command,
+        )
         return
 
     mentions = extract_mentions(memory.content)
-    targets: dict[str, Agent] = {}
-    for agent in await Agent.objects.filter_by(board_id=board.id).all(session):
-        if agent.is_board_lead:
-            targets[str(agent.id)] = agent
-            continue
-        if mentions and matches_agent_mention(agent, mentions):
-            targets[str(agent.id)] = agent
-    if actor.actor_type == "agent" and actor.agent:
-        targets.pop(str(actor.agent.id), None)
+    targets = _chat_targets(
+        agents=await Agent.objects.filter_by(board_id=board.id).all(session),
+        mentions=mentions,
+        actor=actor,
+    )
     if not targets:
         return
-    actor_name = "User"
-    if actor.actor_type == "agent" and actor.agent:
-        actor_name = actor.agent.name
-    elif actor.user:
-        actor_name = actor.user.preferred_name or actor.user.name or actor_name
+    actor_name = _actor_display_name(actor)
     snippet = memory.content.strip()
-    if len(snippet) > 800:
-        snippet = f"{snippet[:797]}..."
+    if len(snippet) > MAX_SNIPPET_LENGTH:
+        snippet = f"{snippet[: MAX_SNIPPET_LENGTH - 3]}..."
     base_url = settings.base_url or "http://localhost:8000"
     for agent in targets.values():
         if not agent.openclaw_session_id:
@@ -180,11 +245,13 @@ async def _notify_chat_targets(
 
 @router.get("", response_model=DefaultLimitOffsetPage[BoardMemoryRead])
 async def list_board_memory(
-    is_chat: bool | None = Query(default=None),
-    board: Board = Depends(get_board_for_actor_read),
-    session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    *,
+    is_chat: bool | None = IS_CHAT_QUERY,
+    board: Board = BOARD_READ_DEP,
+    session: AsyncSession = SESSION_DEP,
+    _actor: ActorContext = ACTOR_DEP,
 ) -> DefaultLimitOffsetPage[BoardMemoryRead]:
+    """List board memory entries, optionally filtering chat entries."""
     statement = (
         BoardMemory.objects.filter_by(board_id=board.id)
         # Old/invalid rows (empty/whitespace-only content) can exist; exclude them to
@@ -200,11 +267,13 @@ async def list_board_memory(
 @router.get("/stream")
 async def stream_board_memory(
     request: Request,
-    board: Board = Depends(get_board_for_actor_read),
-    actor: ActorContext = Depends(require_admin_or_agent),
-    since: str | None = Query(default=None),
-    is_chat: bool | None = Query(default=None),
+    *,
+    board: Board = BOARD_READ_DEP,
+    _actor: ActorContext = ACTOR_DEP,
+    since: str | None = SINCE_QUERY,
+    is_chat: bool | None = IS_CHAT_QUERY,
 ) -> EventSourceResponse:
+    """Stream board memory events over server-sent events."""
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -221,11 +290,10 @@ async def stream_board_memory(
                     is_chat=is_chat,
                 )
             for memory in memories:
-                if memory.created_at > last_seen:
-                    last_seen = memory.created_at
+                last_seen = max(memory.created_at, last_seen)
                 payload = {"memory": _serialize_memory(memory)}
                 yield {"event": "memory", "data": json.dumps(payload)}
-            await asyncio.sleep(2)
+            await asyncio.sleep(STREAM_POLL_SECONDS)
 
     return EventSourceResponse(event_generator(), ping=15)
 
@@ -233,10 +301,11 @@ async def stream_board_memory(
 @router.post("", response_model=BoardMemoryRead)
 async def create_board_memory(
     payload: BoardMemoryCreate,
-    board: Board = Depends(get_board_for_actor_write),
-    session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    board: Board = BOARD_WRITE_DEP,
+    session: AsyncSession = SESSION_DEP,
+    actor: ActorContext = ACTOR_DEP,
 ) -> BoardMemory:
+    """Create a board memory entry and notify chat targets when needed."""
     is_chat = payload.tags is not None and "chat" in payload.tags
     source = payload.source
     if is_chat and not source:
@@ -255,5 +324,10 @@ async def create_board_memory(
     await session.commit()
     await session.refresh(memory)
     if is_chat:
-        await _notify_chat_targets(session=session, board=board, memory=memory, actor=actor)
+        await _notify_chat_targets(
+            session=session,
+            board=board,
+            memory=memory,
+            actor=actor,
+        )
     return memory

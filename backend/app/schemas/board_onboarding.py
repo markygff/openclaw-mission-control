@@ -1,7 +1,9 @@
+"""Schemas used by the board-onboarding assistant flow."""
+
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Self
+from typing import Literal, Self
 from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
@@ -9,17 +11,23 @@ from sqlmodel import SQLModel
 
 from app.schemas.common import NonEmptyStr
 
+_RUNTIME_TYPE_REFERENCES = (datetime, UUID, NonEmptyStr)
+
 
 class BoardOnboardingStart(SQLModel):
-    pass
+    """Start signal for initializing onboarding conversation."""
 
 
 class BoardOnboardingAnswer(SQLModel):
+    """User answer payload for a single onboarding question."""
+
     answer: NonEmptyStr
     other_text: str | None = None
 
 
 class BoardOnboardingConfirm(SQLModel):
+    """Payload used to confirm generated onboarding draft fields."""
+
     board_type: str
     objective: str | None = None
     success_metrics: dict[str, object] | None = None
@@ -27,23 +35,32 @@ class BoardOnboardingConfirm(SQLModel):
 
     @model_validator(mode="after")
     def validate_goal_fields(self) -> Self:
-        if self.board_type == "goal":
-            if not self.objective or not self.success_metrics:
-                raise ValueError("Confirmed goal boards require objective and success_metrics")
+        """Require goal metadata when the board type is `goal`."""
+        if self.board_type == "goal" and (
+            not self.objective or not self.success_metrics
+        ):
+            message = (
+                "Confirmed goal boards require objective and success_metrics"
+            )
+            raise ValueError(message)
         return self
 
 
 class BoardOnboardingQuestionOption(SQLModel):
+    """Selectable option for an onboarding question."""
+
     id: NonEmptyStr
     label: NonEmptyStr
 
 
 class BoardOnboardingAgentQuestion(SQLModel):
+    """Question payload emitted by the onboarding assistant."""
+
     question: NonEmptyStr
     options: list[BoardOnboardingQuestionOption] = Field(min_length=1)
 
 
-def _normalize_optional_text(value: Any) -> Any:
+def _normalize_optional_text(value: object) -> object | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -53,6 +70,8 @@ def _normalize_optional_text(value: Any) -> Any:
 
 
 class BoardOnboardingUserProfile(SQLModel):
+    """User-profile preferences gathered during onboarding."""
+
     preferred_name: str | None = None
     pronouns: str | None = None
     timezone: str | None = None
@@ -68,7 +87,8 @@ class BoardOnboardingUserProfile(SQLModel):
         mode="before",
     )
     @classmethod
-    def normalize_text(cls, value: Any) -> Any:
+    def normalize_text(cls, value: object) -> object | None:
+        """Trim optional free-form profile text fields."""
         return _normalize_optional_text(value)
 
 
@@ -79,6 +99,8 @@ LeadAgentUpdateCadence = Literal["asap", "hourly", "daily", "weekly"]
 
 
 class BoardOnboardingLeadAgentDraft(SQLModel):
+    """Editable lead-agent draft configuration."""
+
     name: NonEmptyStr | None = None
     # role, communication_style, emoji are expected keys.
     identity_profile: dict[str, str] | None = None
@@ -97,12 +119,17 @@ class BoardOnboardingLeadAgentDraft(SQLModel):
         mode="before",
     )
     @classmethod
-    def normalize_text_fields(cls, value: Any) -> Any:
+    def normalize_text_fields(cls, value: object) -> object | None:
+        """Trim optional lead-agent preference fields."""
         return _normalize_optional_text(value)
 
     @field_validator("identity_profile", mode="before")
     @classmethod
-    def normalize_identity_profile(cls, value: Any) -> Any:
+    def normalize_identity_profile(
+        cls,
+        value: object,
+    ) -> object | None:
+        """Normalize identity profile keys and values as trimmed strings."""
         if value is None:
             return None
         if not isinstance(value, dict):
@@ -121,6 +148,8 @@ class BoardOnboardingLeadAgentDraft(SQLModel):
 
 
 class BoardOnboardingAgentComplete(BoardOnboardingConfirm):
+    """Complete onboarding draft produced by the onboarding assistant."""
+
     status: Literal["complete"]
     user_profile: BoardOnboardingUserProfile | None = None
     lead_agent: BoardOnboardingLeadAgentDraft | None = None
@@ -130,6 +159,8 @@ BoardOnboardingAgentUpdate = BoardOnboardingAgentComplete | BoardOnboardingAgent
 
 
 class BoardOnboardingRead(SQLModel):
+    """Stored onboarding session state returned by API endpoints."""
+
     id: UUID
     board_id: UUID
     session_key: str

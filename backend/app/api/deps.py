@@ -1,19 +1,18 @@
+"""Reusable FastAPI dependencies for auth and board/task access."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from fastapi import Depends, HTTPException, status
-from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.agent_auth import AgentAuthContext, get_agent_auth_context_optional
 from app.core.auth import AuthContext, get_auth_context, get_auth_context_optional
 from app.db.session import get_session
-from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.organizations import Organization
 from app.models.tasks import Task
-from app.models.users import User
 from app.services.admin_access import require_admin
 from app.services.organizations import (
     OrganizationContext,
@@ -23,23 +22,38 @@ from app.services.organizations import (
     require_board_access,
 )
 
+if TYPE_CHECKING:
+    from sqlmodel.ext.asyncio.session import AsyncSession
 
-def require_admin_auth(auth: AuthContext = Depends(get_auth_context)) -> AuthContext:
+    from app.models.agents import Agent
+    from app.models.users import User
+
+AUTH_DEP = Depends(get_auth_context)
+AUTH_OPTIONAL_DEP = Depends(get_auth_context_optional)
+AGENT_AUTH_OPTIONAL_DEP = Depends(get_agent_auth_context_optional)
+SESSION_DEP = Depends(get_session)
+
+
+def require_admin_auth(auth: AuthContext = AUTH_DEP) -> AuthContext:
+    """Require an authenticated admin user."""
     require_admin(auth)
     return auth
 
 
 @dataclass
 class ActorContext:
+    """Authenticated actor context for user or agent callers."""
+
     actor_type: Literal["user", "agent"]
     user: User | None = None
     agent: Agent | None = None
 
 
 def require_admin_or_agent(
-    auth: AuthContext | None = Depends(get_auth_context_optional),
-    agent_auth: AgentAuthContext | None = Depends(get_agent_auth_context_optional),
+    auth: AuthContext | None = AUTH_OPTIONAL_DEP,
+    agent_auth: AgentAuthContext | None = AGENT_AUTH_OPTIONAL_DEP,
 ) -> ActorContext:
+    """Authorize either an admin user or an authenticated agent."""
     if auth is not None:
         require_admin(auth)
         return ActorContext(actor_type="user", user=auth.user)
@@ -48,10 +62,14 @@ def require_admin_or_agent(
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 
+ACTOR_DEP = Depends(require_admin_or_agent)
+
+
 async def require_org_member(
-    auth: AuthContext = Depends(get_auth_context),
-    session: AsyncSession = Depends(get_session),
+    auth: AuthContext = AUTH_DEP,
+    session: AsyncSession = SESSION_DEP,
 ) -> OrganizationContext:
+    """Resolve and require active organization membership for the current user."""
     if auth.user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     member = await get_active_membership(session, auth.user)
@@ -59,15 +77,21 @@ async def require_org_member(
         member = await ensure_member_for_user(session, auth.user)
     if member is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
-    organization = await Organization.objects.by_id(member.organization_id).first(session)
+    organization = await Organization.objects.by_id(member.organization_id).first(
+        session,
+    )
     if organization is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return OrganizationContext(organization=organization, member=member)
 
 
+ORG_MEMBER_DEP = Depends(require_org_member)
+
+
 async def require_org_admin(
-    ctx: OrganizationContext = Depends(require_org_member),
+    ctx: OrganizationContext = ORG_MEMBER_DEP,
 ) -> OrganizationContext:
+    """Require organization-admin membership privileges."""
     if not is_org_admin(ctx.member):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return ctx
@@ -75,8 +99,9 @@ async def require_org_admin(
 
 async def get_board_or_404(
     board_id: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = SESSION_DEP,
 ) -> Board:
+    """Load a board by id or raise HTTP 404."""
     board = await Board.objects.by_id(board_id).first(session)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -85,9 +110,10 @@ async def get_board_or_404(
 
 async def get_board_for_actor_read(
     board_id: str,
-    session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    session: AsyncSession = SESSION_DEP,
+    actor: ActorContext = ACTOR_DEP,
 ) -> Board:
+    """Load a board and enforce actor read access."""
     board = await Board.objects.by_id(board_id).first(session)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -103,9 +129,10 @@ async def get_board_for_actor_read(
 
 async def get_board_for_actor_write(
     board_id: str,
-    session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    session: AsyncSession = SESSION_DEP,
+    actor: ActorContext = ACTOR_DEP,
 ) -> Board:
+    """Load a board and enforce actor write access."""
     board = await Board.objects.by_id(board_id).first(session)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -121,9 +148,10 @@ async def get_board_for_actor_write(
 
 async def get_board_for_user_read(
     board_id: str,
-    session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = SESSION_DEP,
+    auth: AuthContext = AUTH_DEP,
 ) -> Board:
+    """Load a board and enforce authenticated-user read access."""
     board = await Board.objects.by_id(board_id).first(session)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -135,9 +163,10 @@ async def get_board_for_user_read(
 
 async def get_board_for_user_write(
     board_id: str,
-    session: AsyncSession = Depends(get_session),
-    auth: AuthContext = Depends(get_auth_context),
+    session: AsyncSession = SESSION_DEP,
+    auth: AuthContext = AUTH_DEP,
 ) -> Board:
+    """Load a board and enforce authenticated-user write access."""
     board = await Board.objects.by_id(board_id).first(session)
     if board is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -147,11 +176,15 @@ async def get_board_for_user_write(
     return board
 
 
+BOARD_READ_DEP = Depends(get_board_for_actor_read)
+
+
 async def get_task_or_404(
     task_id: str,
-    board: Board = Depends(get_board_for_actor_read),
-    session: AsyncSession = Depends(get_session),
+    board: Board = BOARD_READ_DEP,
+    session: AsyncSession = SESSION_DEP,
 ) -> Task:
+    """Load a task for a board or raise HTTP 404."""
     task = await Task.objects.by_id(task_id).first(session)
     if task is None or task.board_id != board.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)

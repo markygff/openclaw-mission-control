@@ -1,3 +1,5 @@
+# ruff: noqa
+
 from app.models.agents import Agent
 from app.services.mentions import extract_mentions, matches_agent_mention
 

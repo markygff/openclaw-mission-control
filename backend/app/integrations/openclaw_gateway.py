@@ -1,3 +1,5 @@
+"""OpenClaw gateway client helpers for websocket RPC calls."""
+
 from __future__ import annotations
 
 import asyncio
@@ -14,16 +16,20 @@ from app.integrations.openclaw_gateway_protocol import PROTOCOL_VERSION
 
 
 class OpenClawGatewayError(RuntimeError):
-    pass
+    """Raised when OpenClaw gateway calls fail."""
 
 
 @dataclass
 class OpenClawResponse:
+    """Container for raw OpenClaw payloads."""
+
     payload: Any
 
 
 @dataclass(frozen=True)
 class GatewayConfig:
+    """Connection configuration for the OpenClaw gateway."""
+
     url: str
     token: str | None = None
 
@@ -31,7 +37,8 @@ class GatewayConfig:
 def _build_gateway_url(config: GatewayConfig) -> str:
     base_url = (config.url or "").strip()
     if not base_url:
-        raise OpenClawGatewayError("Gateway URL is not configured for this board.")
+        message = "Gateway URL is not configured for this board."
+        raise OpenClawGatewayError(message)
     token = config.token
     if not token:
         return base_url
@@ -40,7 +47,10 @@ def _build_gateway_url(config: GatewayConfig) -> str:
     return urlunparse(parsed._replace(query=query))
 
 
-async def _await_response(ws: websockets.WebSocketClientProtocol, request_id: str) -> Any:
+async def _await_response(
+    ws: websockets.WebSocketClientProtocol,
+    request_id: str,
+) -> object:
     while True:
         raw = await ws.recv()
         data = json.loads(raw)
@@ -53,15 +63,23 @@ async def _await_response(ws: websockets.WebSocketClientProtocol, request_id: st
 
         if data.get("id") == request_id:
             if data.get("error"):
-                raise OpenClawGatewayError(data["error"].get("message", "Gateway error"))
+                message = data["error"].get("message", "Gateway error")
+                raise OpenClawGatewayError(message)
             return data.get("result")
 
 
 async def _send_request(
-    ws: websockets.WebSocketClientProtocol, method: str, params: dict[str, Any] | None
-) -> Any:
+    ws: websockets.WebSocketClientProtocol,
+    method: str,
+    params: dict[str, Any] | None,
+) -> object:
     request_id = str(uuid4())
-    message = {"type": "req", "id": request_id, "method": method, "params": params or {}}
+    message = {
+        "type": "req",
+        "id": request_id,
+        "method": method,
+        "params": params or {},
+    }
     await ws.send(json.dumps(message))
     return await _await_response(ws, request_id)
 
@@ -109,7 +127,8 @@ async def openclaw_call(
     params: dict[str, Any] | None = None,
     *,
     config: GatewayConfig,
-) -> Any:
+) -> object:
+    """Call a gateway RPC method and return the result payload."""
     gateway_url = _build_gateway_url(config)
     try:
         async with websockets.connect(gateway_url, ping_interval=None) as ws:
@@ -138,7 +157,8 @@ async def send_message(
     session_key: str,
     config: GatewayConfig,
     deliver: bool = False,
-) -> Any:
+) -> object:
+    """Send a chat message to a session."""
     params: dict[str, Any] = {
         "sessionKey": session_key,
         "message": message,
@@ -152,14 +172,16 @@ async def get_chat_history(
     session_key: str,
     config: GatewayConfig,
     limit: int | None = None,
-) -> Any:
+) -> object:
+    """Fetch chat history for a session."""
     params: dict[str, Any] = {"sessionKey": session_key}
     if limit is not None:
         params["limit"] = limit
     return await openclaw_call("chat.history", params, config=config)
 
 
-async def delete_session(session_key: str, *, config: GatewayConfig) -> Any:
+async def delete_session(session_key: str, *, config: GatewayConfig) -> object:
+    """Delete a session by key."""
     return await openclaw_call("sessions.delete", {"key": session_key}, config=config)
 
 
@@ -168,7 +190,8 @@ async def ensure_session(
     *,
     config: GatewayConfig,
     label: str | None = None,
-) -> Any:
+) -> object:
+    """Ensure a session exists and optionally update its label."""
     params: dict[str, Any] = {"key": session_key}
     if label:
         params["label"] = label

@@ -1,3 +1,5 @@
+"""Pydantic/SQLModel schemas for agent API payloads."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -9,6 +11,8 @@ from pydantic import field_validator
 from sqlmodel import SQLModel
 
 from app.schemas.common import NonEmptyStr
+
+_RUNTIME_TYPE_REFERENCES = (datetime, UUID, NonEmptyStr)
 
 
 def _normalize_identity_profile(
@@ -36,6 +40,8 @@ def _normalize_identity_profile(
 
 
 class AgentBase(SQLModel):
+    """Common fields shared by agent create/read/update payloads."""
+
     board_id: UUID | None = None
     name: NonEmptyStr
     status: str = "provisioning"
@@ -46,7 +52,8 @@ class AgentBase(SQLModel):
 
     @field_validator("identity_template", "soul_template", mode="before")
     @classmethod
-    def normalize_templates(cls, value: Any) -> Any:
+    def normalize_templates(cls, value: object) -> object | None:
+        """Normalize blank template text to null."""
         if value is None:
             return None
         if isinstance(value, str):
@@ -56,15 +63,21 @@ class AgentBase(SQLModel):
 
     @field_validator("identity_profile", mode="before")
     @classmethod
-    def normalize_identity_profile(cls, value: Any) -> Any:
+    def normalize_identity_profile(
+        cls,
+        value: object,
+    ) -> dict[str, str] | None:
+        """Normalize identity-profile values into trimmed string mappings."""
         return _normalize_identity_profile(value)
 
 
 class AgentCreate(AgentBase):
-    pass
+    """Payload for creating a new agent."""
 
 
 class AgentUpdate(SQLModel):
+    """Payload for patching an existing agent."""
+
     board_id: UUID | None = None
     is_gateway_main: bool | None = None
     name: NonEmptyStr | None = None
@@ -76,7 +89,8 @@ class AgentUpdate(SQLModel):
 
     @field_validator("identity_template", "soul_template", mode="before")
     @classmethod
-    def normalize_templates(cls, value: Any) -> Any:
+    def normalize_templates(cls, value: object) -> object | None:
+        """Normalize blank template text to null."""
         if value is None:
             return None
         if isinstance(value, str):
@@ -86,11 +100,17 @@ class AgentUpdate(SQLModel):
 
     @field_validator("identity_profile", mode="before")
     @classmethod
-    def normalize_identity_profile(cls, value: Any) -> Any:
+    def normalize_identity_profile(
+        cls,
+        value: object,
+    ) -> dict[str, str] | None:
+        """Normalize identity-profile values into trimmed string mappings."""
         return _normalize_identity_profile(value)
 
 
 class AgentRead(AgentBase):
+    """Public agent representation returned by the API."""
+
     id: UUID
     is_board_lead: bool = False
     is_gateway_main: bool = False
@@ -101,13 +121,19 @@ class AgentRead(AgentBase):
 
 
 class AgentHeartbeat(SQLModel):
+    """Heartbeat status payload sent by agents."""
+
     status: str | None = None
 
 
 class AgentHeartbeatCreate(AgentHeartbeat):
+    """Heartbeat payload used to create an agent lazily."""
+
     name: NonEmptyStr
     board_id: UUID | None = None
 
 
 class AgentNudge(SQLModel):
+    """Nudge message payload for pinging an agent."""
+
     message: NonEmptyStr

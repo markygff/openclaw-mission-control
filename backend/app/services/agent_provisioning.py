@@ -1,5 +1,4 @@
 """Gateway-facing agent provisioning and cleanup helpers."""
-# ruff: noqa: EM101, TRY003
 
 from __future__ import annotations
 
@@ -176,7 +175,8 @@ def _heartbeat_template_name(agent: Agent) -> str:
 
 def _workspace_path(agent: Agent, workspace_root: str) -> str:
     if not workspace_root:
-        raise ValueError("gateway_workspace_root is required")
+        msg = "gateway_workspace_root is required"
+        raise ValueError(msg)
     root = workspace_root.rstrip("/")
     # Use agent key derived from session key when possible. This prevents collisions for
     # lead agents (session key includes board id) even if multiple boards share the same
@@ -227,9 +227,11 @@ def _build_context(
     user: User | None,
 ) -> dict[str, str]:
     if not gateway.workspace_root:
-        raise ValueError("gateway_workspace_root is required")
+        msg = "gateway_workspace_root is required"
+        raise ValueError(msg)
     if not gateway.main_session_key:
-        raise ValueError("gateway_main_session_key is required")
+        msg = "gateway_main_session_key is required"
+        raise ValueError(msg)
     agent_id = str(agent.id)
     workspace_root = gateway.workspace_root
     workspace_path = _workspace_path(agent, workspace_root)
@@ -485,15 +487,18 @@ async def _patch_gateway_agent_list(
 ) -> None:
     cfg = await openclaw_call("config.get", config=config)
     if not isinstance(cfg, dict):
-        raise OpenClawGatewayError("config.get returned invalid payload")
+        msg = "config.get returned invalid payload"
+        raise OpenClawGatewayError(msg)
     base_hash = cfg.get("hash")
     data = cfg.get("config") or cfg.get("parsed") or {}
     if not isinstance(data, dict):
-        raise OpenClawGatewayError("config.get returned invalid config")
+        msg = "config.get returned invalid config"
+        raise OpenClawGatewayError(msg)
     agents = data.get("agents") or {}
     lst = agents.get("list") or []
     if not isinstance(lst, list):
-        raise OpenClawGatewayError("config agents.list is not a list")
+        msg = "config agents.list is not a list"
+        raise OpenClawGatewayError(msg)
 
     updated = False
     new_list: list[dict[str, Any]] = []
@@ -528,19 +533,23 @@ async def patch_gateway_agent_heartbeats(  # noqa: C901
     Each entry is (agent_id, workspace_path, heartbeat_dict).
     """
     if not gateway.url:
-        raise OpenClawGatewayError("Gateway url is required")
+        msg = "Gateway url is required"
+        raise OpenClawGatewayError(msg)
     config = GatewayClientConfig(url=gateway.url, token=gateway.token)
     cfg = await openclaw_call("config.get", config=config)
     if not isinstance(cfg, dict):
-        raise OpenClawGatewayError("config.get returned invalid payload")
+        msg = "config.get returned invalid payload"
+        raise OpenClawGatewayError(msg)
     base_hash = cfg.get("hash")
     data = cfg.get("config") or cfg.get("parsed") or {}
     if not isinstance(data, dict):
-        raise OpenClawGatewayError("config.get returned invalid config")
+        msg = "config.get returned invalid config"
+        raise OpenClawGatewayError(msg)
     agents_section = data.get("agents") or {}
     lst = agents_section.get("list") or []
     if not isinstance(lst, list):
-        raise OpenClawGatewayError("config agents.list is not a list")
+        msg = "config agents.list is not a list"
+        raise OpenClawGatewayError(msg)
 
     entry_by_id: dict[str, tuple[str, dict[str, Any]]] = {
         agent_id: (workspace_path, heartbeat)
@@ -581,7 +590,8 @@ async def patch_gateway_agent_heartbeats(  # noqa: C901
 async def sync_gateway_agent_heartbeats(gateway: Gateway, agents: list[Agent]) -> None:
     """Sync current Agent.heartbeat_config values to the gateway config."""
     if not gateway.workspace_root:
-        raise OpenClawGatewayError("gateway workspace_root is required")
+        msg = "gateway workspace_root is required"
+        raise OpenClawGatewayError(msg)
     entries: list[tuple[str, str, dict[str, Any]]] = []
     for agent in agents:
         agent_id = _agent_key(agent)
@@ -599,15 +609,18 @@ async def _remove_gateway_agent_list(
 ) -> None:
     cfg = await openclaw_call("config.get", config=config)
     if not isinstance(cfg, dict):
-        raise OpenClawGatewayError("config.get returned invalid payload")
+        msg = "config.get returned invalid payload"
+        raise OpenClawGatewayError(msg)
     base_hash = cfg.get("hash")
     data = cfg.get("config") or cfg.get("parsed") or {}
     if not isinstance(data, dict):
-        raise OpenClawGatewayError("config.get returned invalid config")
+        msg = "config.get returned invalid config"
+        raise OpenClawGatewayError(msg)
     agents = data.get("agents") or {}
     lst = agents.get("list") or []
     if not isinstance(lst, list):
-        raise OpenClawGatewayError("config agents.list is not a list")
+        msg = "config agents.list is not a list"
+        raise OpenClawGatewayError(msg)
 
     new_list = [
         entry
@@ -658,7 +671,8 @@ async def provision_agent(  # noqa: C901, PLR0912, PLR0913
     if not gateway.url:
         return
     if not gateway.workspace_root:
-        raise ValueError("gateway_workspace_root is required")
+        msg = "gateway_workspace_root is required"
+        raise ValueError(msg)
     client_config = GatewayClientConfig(url=gateway.url, token=gateway.token)
     session_key = _session_key(agent)
     await ensure_session(session_key, config=client_config, label=agent.name)
@@ -734,7 +748,8 @@ async def provision_main_agent(  # noqa: C901, PLR0912, PLR0913
     if not gateway.url:
         return
     if not gateway.main_session_key:
-        raise ValueError("gateway main_session_key is required")
+        msg = "gateway main_session_key is required"
+        raise ValueError(msg)
     client_config = GatewayClientConfig(url=gateway.url, token=gateway.token)
     await ensure_session(
         gateway.main_session_key, config=client_config, label="Main Agent",
@@ -745,7 +760,8 @@ async def provision_main_agent(  # noqa: C901, PLR0912, PLR0913
         fallback_session_key=gateway.main_session_key,
     )
     if not agent_id:
-        raise OpenClawGatewayError("Unable to resolve gateway main agent id")
+        msg = "Unable to resolve gateway main agent id"
+        raise OpenClawGatewayError(msg)
 
     context = _build_main_context(agent, gateway, auth_token, user)
     supported = set(await _supported_gateway_files(client_config))
@@ -796,7 +812,8 @@ async def cleanup_agent(
     if not gateway.url:
         return None
     if not gateway.workspace_root:
-        raise ValueError("gateway_workspace_root is required")
+        msg = "gateway_workspace_root is required"
+        raise ValueError(msg)
     client_config = GatewayClientConfig(url=gateway.url, token=gateway.token)
 
     agent_id = _agent_key(agent)

@@ -1,15 +1,17 @@
+"""Board-group memory CRUD and streaming endpoints."""
+
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func
 from sqlmodel import col
-from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import (
@@ -24,28 +26,56 @@ from app.core.time import utcnow
 from app.db.pagination import paginate
 from app.db.session import async_session_maker, get_session
 from app.integrations.openclaw_gateway import GatewayConfig as GatewayClientConfig
-from app.integrations.openclaw_gateway import OpenClawGatewayError, ensure_session, send_message
+from app.integrations.openclaw_gateway import (
+    OpenClawGatewayError,
+    ensure_session,
+    send_message,
+)
 from app.models.agents import Agent
 from app.models.board_group_memory import BoardGroupMemory
 from app.models.board_groups import BoardGroup
 from app.models.boards import Board
 from app.models.gateways import Gateway
 from app.models.users import User
-from app.schemas.board_group_memory import BoardGroupMemoryCreate, BoardGroupMemoryRead
+from app.schemas.board_group_memory import (
+    BoardGroupMemoryCreate,
+    BoardGroupMemoryRead,
+)
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.services.mentions import extract_mentions, matches_agent_mention
 from app.services.organizations import (
-    OrganizationContext,
     is_org_admin,
     list_accessible_board_ids,
     member_all_boards_read,
     member_all_boards_write,
 )
 
-router = APIRouter(tags=["board-group-memory"])
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
-group_router = APIRouter(prefix="/board-groups/{group_id}/memory", tags=["board-group-memory"])
-board_router = APIRouter(prefix="/boards/{board_id}/group-memory", tags=["board-group-memory"])
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
+    from app.services.organizations import OrganizationContext
+
+router = APIRouter(tags=["board-group-memory"])
+group_router = APIRouter(
+    prefix="/board-groups/{group_id}/memory",
+    tags=["board-group-memory"],
+)
+board_router = APIRouter(
+    prefix="/boards/{board_id}/group-memory",
+    tags=["board-group-memory"],
+)
+MAX_SNIPPET_LENGTH = 800
+STREAM_POLL_SECONDS = 2
+SESSION_DEP = Depends(get_session)
+ORG_MEMBER_DEP = Depends(require_org_member)
+BOARD_READ_DEP = Depends(get_board_for_actor_read)
+BOARD_WRITE_DEP = Depends(get_board_for_actor_write)
+ACTOR_DEP = Depends(require_admin_or_agent)
+IS_CHAT_QUERY = Query(default=None)
+SINCE_QUERY = Query(default=None)
+_RUNTIME_TYPE_REFERENCES = (UUID,)
 
 
 def _parse_since(value: str | None) -> datetime | None:
@@ -65,10 +95,16 @@ def _parse_since(value: str | None) -> datetime | None:
 
 
 def _serialize_memory(memory: BoardGroupMemory) -> dict[str, object]:
-    return BoardGroupMemoryRead.model_validate(memory, from_attributes=True).model_dump(mode="json")
+    return BoardGroupMemoryRead.model_validate(
+        memory,
+        from_attributes=True,
+    ).model_dump(mode="json")
 
 
-async def _gateway_config(session: AsyncSession, board: Board) -> GatewayClientConfig | None:
+async def _gateway_config(
+    session: AsyncSession,
+    board: Board,
+) -> GatewayClientConfig | None:
     if board.gateway_id is None:
         return None
     gateway = await Gateway.objects.by_id(board.gateway_id).first(session)
@@ -104,7 +140,7 @@ async def _fetch_memory_events(
     if is_chat is not None:
         statement = statement.filter(col(BoardGroupMemory.is_chat) == is_chat)
     statement = statement.filter(col(BoardGroupMemory.created_at) >= since).order_by(
-        col(BoardGroupMemory.created_at)
+        col(BoardGroupMemory.created_at),
     )
     return await statement.all(session)
 
@@ -128,17 +164,122 @@ async def _require_group_access(
         return group
 
     board_ids = [
-        board.id for board in await Board.objects.filter_by(board_group_id=group_id).all(session)
+        board.id
+        for board in await Board.objects.filter_by(board_group_id=group_id).all(
+            session,
+        )
     ]
     if not board_ids:
         if is_org_admin(ctx.member):
             return group
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
 
-    allowed_ids = await list_accessible_board_ids(session, member=ctx.member, write=write)
+    allowed_ids = await list_accessible_board_ids(
+        session,
+        member=ctx.member,
+        write=write,
+    )
     if not set(board_ids).intersection(set(allowed_ids)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return group
+
+
+async def _group_read_access(
+    group_id: UUID,
+    session: AsyncSession = SESSION_DEP,
+    ctx: OrganizationContext = ORG_MEMBER_DEP,
+) -> BoardGroup:
+    return await _require_group_access(session, group_id=group_id, ctx=ctx, write=False)
+
+
+GROUP_READ_DEP = Depends(_group_read_access)
+
+
+def _group_chat_targets(
+    *,
+    agents: list[Agent],
+    actor: ActorContext,
+    is_broadcast: bool,
+    mentions: set[str],
+) -> dict[str, Agent]:
+    targets: dict[str, Agent] = {}
+    for agent in agents:
+        if not agent.openclaw_session_id:
+            continue
+        if actor.actor_type == "agent" and actor.agent and agent.id == actor.agent.id:
+            continue
+        if is_broadcast or agent.is_board_lead:
+            targets[str(agent.id)] = agent
+            continue
+        if mentions and matches_agent_mention(agent, mentions):
+            targets[str(agent.id)] = agent
+    return targets
+
+
+def _group_actor_name(actor: ActorContext) -> str:
+    if actor.actor_type == "agent" and actor.agent:
+        return actor.agent.name
+    if actor.user:
+        return actor.user.preferred_name or actor.user.name or "User"
+    return "User"
+
+
+def _group_header(*, is_broadcast: bool, mentioned: bool) -> str:
+    if is_broadcast:
+        return "GROUP BROADCAST"
+    if mentioned:
+        return "GROUP CHAT MENTION"
+    return "GROUP CHAT"
+
+
+@dataclass(frozen=True)
+class _NotifyGroupContext:
+    session: AsyncSession
+    group: BoardGroup
+    board_by_id: dict[UUID, Board]
+    mentions: set[str]
+    is_broadcast: bool
+    actor_name: str
+    snippet: str
+    base_url: str
+
+
+async def _notify_group_target(
+    context: _NotifyGroupContext,
+    agent: Agent,
+) -> None:
+    session_key = agent.openclaw_session_id
+    board_id = agent.board_id
+    if not session_key or board_id is None:
+        return
+    board = context.board_by_id.get(board_id)
+    if board is None:
+        return
+    config = await _gateway_config(context.session, board)
+    if config is None:
+        return
+    header = _group_header(
+        is_broadcast=context.is_broadcast,
+        mentioned=matches_agent_mention(agent, context.mentions),
+    )
+    message = (
+        f"{header}\n"
+        f"Group: {context.group.name}\n"
+        f"From: {context.actor_name}\n\n"
+        f"{context.snippet}\n\n"
+        "Reply via group chat (shared across linked boards):\n"
+        f"POST {context.base_url}/api/v1/boards/{board.id}/group-memory\n"
+        'Body: {"content":"...","tags":["chat"]}'
+    )
+    try:
+        await _send_agent_message(
+            session_key=session_key,
+            config=config,
+            agent_name=agent.name,
+            message=message,
+        )
+    except OpenClawGatewayError:
+        return
 
 
 async def _notify_group_memory_targets(
@@ -163,83 +304,47 @@ async def _notify_group_memory_targets(
     board_ids = list(board_by_id.keys())
     agents = await Agent.objects.by_field_in("board_id", board_ids).all(session)
 
-    targets: dict[str, Agent] = {}
-    for agent in agents:
-        if not agent.openclaw_session_id:
-            continue
-        if actor.actor_type == "agent" and actor.agent and agent.id == actor.agent.id:
-            continue
-        if is_broadcast:
-            targets[str(agent.id)] = agent
-            continue
-        if agent.is_board_lead:
-            targets[str(agent.id)] = agent
-            continue
-        if mentions and matches_agent_mention(agent, mentions):
-            targets[str(agent.id)] = agent
+    targets = _group_chat_targets(
+        agents=agents,
+        actor=actor,
+        is_broadcast=is_broadcast,
+        mentions=mentions,
+    )
 
     if not targets:
         return
 
-    actor_name = "User"
-    if actor.actor_type == "agent" and actor.agent:
-        actor_name = actor.agent.name
-    elif actor.user:
-        actor_name = actor.user.preferred_name or actor.user.name or actor_name
+    actor_name = _group_actor_name(actor)
 
     snippet = memory.content.strip()
-    if len(snippet) > 800:
-        snippet = f"{snippet[:797]}..."
+    if len(snippet) > MAX_SNIPPET_LENGTH:
+        snippet = f"{snippet[: MAX_SNIPPET_LENGTH - 3]}..."
 
     base_url = settings.base_url or "http://localhost:8000"
 
+    context = _NotifyGroupContext(
+        session=session,
+        group=group,
+        board_by_id=board_by_id,
+        mentions=mentions,
+        is_broadcast=is_broadcast,
+        actor_name=actor_name,
+        snippet=snippet,
+        base_url=base_url,
+    )
     for agent in targets.values():
-        session_key = agent.openclaw_session_id
-        if not session_key:
-            continue
-        board_id = agent.board_id
-        if board_id is None:
-            continue
-        board = board_by_id.get(board_id)
-        if board is None:
-            continue
-        config = await _gateway_config(session, board)
-        if config is None:
-            continue
-        mentioned = matches_agent_mention(agent, mentions)
-        if is_broadcast:
-            header = "GROUP BROADCAST"
-        elif mentioned:
-            header = "GROUP CHAT MENTION"
-        else:
-            header = "GROUP CHAT"
-        message = (
-            f"{header}\n"
-            f"Group: {group.name}\n"
-            f"From: {actor_name}\n\n"
-            f"{snippet}\n\n"
-            "Reply via group chat (shared across linked boards):\n"
-            f"POST {base_url}/api/v1/boards/{board.id}/group-memory\n"
-            'Body: {"content":"...","tags":["chat"]}'
-        )
-        try:
-            await _send_agent_message(
-                session_key=session_key,
-                config=config,
-                agent_name=agent.name,
-                message=message,
-            )
-        except OpenClawGatewayError:
-            continue
+        await _notify_group_target(context, agent)
 
 
 @group_router.get("", response_model=DefaultLimitOffsetPage[BoardGroupMemoryRead])
 async def list_board_group_memory(
     group_id: UUID,
-    is_chat: bool | None = Query(default=None),
-    session: AsyncSession = Depends(get_session),
-    ctx: OrganizationContext = Depends(require_org_member),
+    *,
+    is_chat: bool | None = IS_CHAT_QUERY,
+    session: AsyncSession = SESSION_DEP,
+    ctx: OrganizationContext = ORG_MEMBER_DEP,
 ) -> DefaultLimitOffsetPage[BoardGroupMemoryRead]:
+    """List board-group memory entries for a specific group."""
     await _require_group_access(session, group_id=group_id, ctx=ctx, write=False)
     statement = (
         BoardGroupMemory.objects.filter_by(board_group_id=group_id)
@@ -255,14 +360,13 @@ async def list_board_group_memory(
 
 @group_router.get("/stream")
 async def stream_board_group_memory(
-    group_id: UUID,
     request: Request,
-    since: str | None = Query(default=None),
-    is_chat: bool | None = Query(default=None),
-    session: AsyncSession = Depends(get_session),
-    ctx: OrganizationContext = Depends(require_org_member),
+    group: BoardGroup = GROUP_READ_DEP,
+    *,
+    since: str | None = SINCE_QUERY,
+    is_chat: bool | None = IS_CHAT_QUERY,
 ) -> EventSourceResponse:
-    await _require_group_access(session, group_id=group_id, ctx=ctx, write=False)
+    """Stream memory entries for a board group via server-sent events."""
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -274,16 +378,15 @@ async def stream_board_group_memory(
             async with async_session_maker() as s:
                 memories = await _fetch_memory_events(
                     s,
-                    group_id,
+                    group.id,
                     last_seen,
                     is_chat=is_chat,
                 )
             for memory in memories:
-                if memory.created_at > last_seen:
-                    last_seen = memory.created_at
+                last_seen = max(memory.created_at, last_seen)
                 payload = {"memory": _serialize_memory(memory)}
                 yield {"event": "memory", "data": json.dumps(payload)}
-            await asyncio.sleep(2)
+            await asyncio.sleep(STREAM_POLL_SECONDS)
 
     return EventSourceResponse(event_generator(), ping=15)
 
@@ -292,9 +395,10 @@ async def stream_board_group_memory(
 async def create_board_group_memory(
     group_id: UUID,
     payload: BoardGroupMemoryCreate,
-    session: AsyncSession = Depends(get_session),
-    ctx: OrganizationContext = Depends(require_org_member),
+    session: AsyncSession = SESSION_DEP,
+    ctx: OrganizationContext = ORG_MEMBER_DEP,
 ) -> BoardGroupMemory:
+    """Create a board-group memory entry and notify chat recipients."""
     group = await _require_group_access(session, group_id=group_id, ctx=ctx, write=True)
 
     user = await User.objects.by_id(ctx.member.user_id).first(session)
@@ -320,16 +424,23 @@ async def create_board_group_memory(
     await session.commit()
     await session.refresh(memory)
     if should_notify:
-        await _notify_group_memory_targets(session=session, group=group, memory=memory, actor=actor)
+        await _notify_group_memory_targets(
+            session=session,
+            group=group,
+            memory=memory,
+            actor=actor,
+        )
     return memory
 
 
 @board_router.get("", response_model=DefaultLimitOffsetPage[BoardGroupMemoryRead])
 async def list_board_group_memory_for_board(
-    is_chat: bool | None = Query(default=None),
-    board: Board = Depends(get_board_for_actor_read),
-    session: AsyncSession = Depends(get_session),
+    *,
+    is_chat: bool | None = IS_CHAT_QUERY,
+    board: Board = BOARD_READ_DEP,
+    session: AsyncSession = SESSION_DEP,
 ) -> DefaultLimitOffsetPage[BoardGroupMemoryRead]:
+    """List memory entries for the board's linked group."""
     group_id = board.board_group_id
     if group_id is None:
         return await paginate(session, BoardGroupMemory.objects.by_ids([]).statement)
@@ -349,10 +460,12 @@ async def list_board_group_memory_for_board(
 @board_router.get("/stream")
 async def stream_board_group_memory_for_board(
     request: Request,
-    board: Board = Depends(get_board_for_actor_read),
-    since: str | None = Query(default=None),
-    is_chat: bool | None = Query(default=None),
+    *,
+    board: Board = BOARD_READ_DEP,
+    since: str | None = SINCE_QUERY,
+    is_chat: bool | None = IS_CHAT_QUERY,
 ) -> EventSourceResponse:
+    """Stream memory entries for the board's linked group."""
     group_id = board.board_group_id
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
@@ -373,11 +486,10 @@ async def stream_board_group_memory_for_board(
                     is_chat=is_chat,
                 )
             for memory in memories:
-                if memory.created_at > last_seen:
-                    last_seen = memory.created_at
+                last_seen = max(memory.created_at, last_seen)
                 payload = {"memory": _serialize_memory(memory)}
                 yield {"event": "memory", "data": json.dumps(payload)}
-            await asyncio.sleep(2)
+            await asyncio.sleep(STREAM_POLL_SECONDS)
 
     return EventSourceResponse(event_generator(), ping=15)
 
@@ -385,10 +497,11 @@ async def stream_board_group_memory_for_board(
 @board_router.post("", response_model=BoardGroupMemoryRead)
 async def create_board_group_memory_for_board(
     payload: BoardGroupMemoryCreate,
-    board: Board = Depends(get_board_for_actor_write),
-    session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    board: Board = BOARD_WRITE_DEP,
+    session: AsyncSession = SESSION_DEP,
+    actor: ActorContext = ACTOR_DEP,
 ) -> BoardGroupMemory:
+    """Create a group memory entry from a board context and notify recipients."""
     group_id = board.board_group_id
     if group_id is None:
         raise HTTPException(
@@ -420,7 +533,12 @@ async def create_board_group_memory_for_board(
     await session.commit()
     await session.refresh(memory)
     if should_notify:
-        await _notify_group_memory_targets(session=session, group=group, memory=memory, actor=actor)
+        await _notify_group_memory_targets(
+            session=session,
+            group=group,
+            memory=memory,
+            actor=actor,
+        )
     return memory
 
 

@@ -1,5 +1,4 @@
 """Organization membership and board-access service helpers."""
-# ruff: noqa: D101, D103
 
 from __future__ import annotations
 
@@ -38,19 +37,24 @@ ROLE_RANK = {"member": 0, "admin": 1, "owner": 2}
 
 @dataclass(frozen=True)
 class OrganizationContext:
+    """Resolved organization and membership for the active user."""
+
     organization: Organization
     member: OrganizationMember
 
 
 def is_org_admin(member: OrganizationMember) -> bool:
+    """Return whether a member has admin-level organization privileges."""
     return member.role in ADMIN_ROLES
 
 
 async def get_default_org(session: AsyncSession) -> Organization | None:
+    """Return the default personal organization if it exists."""
     return await Organization.objects.filter_by(name=DEFAULT_ORG_NAME).first(session)
 
 
 async def ensure_default_org(session: AsyncSession) -> Organization:
+    """Ensure and return the default personal organization."""
     org = await get_default_org(session)
     if org is not None:
         return org
@@ -67,6 +71,7 @@ async def get_member(
     user_id: UUID,
     organization_id: UUID,
 ) -> OrganizationMember | None:
+    """Fetch a membership by user id and organization id."""
     return await OrganizationMember.objects.filter_by(
         user_id=user_id,
         organization_id=organization_id,
@@ -76,6 +81,7 @@ async def get_member(
 async def get_first_membership(
     session: AsyncSession, user_id: UUID,
 ) -> OrganizationMember | None:
+    """Return the oldest membership for a user, if any."""
     return (
         await OrganizationMember.objects.filter_by(user_id=user_id)
         .order_by(col(OrganizationMember.created_at).asc())
@@ -89,6 +95,7 @@ async def set_active_organization(
     user: User,
     organization_id: UUID,
 ) -> OrganizationMember:
+    """Set a user's active organization and return the membership."""
     member = await get_member(session, user_id=user.id, organization_id=organization_id)
     if member is None:
         raise HTTPException(
@@ -105,6 +112,7 @@ async def get_active_membership(
     session: AsyncSession,
     user: User,
 ) -> OrganizationMember | None:
+    """Resolve and normalize the user's currently active membership."""
     db_user = await User.objects.by_id(user.id).first(session)
     if db_user is None:
         db_user = user
@@ -151,6 +159,7 @@ async def accept_invite(
     invite: OrganizationInvite,
     user: User,
 ) -> OrganizationMember:
+    """Accept an invite and create membership plus scoped board access rows."""
     now = utcnow()
     member = OrganizationMember(
         organization_id=invite.organization_id,
@@ -200,6 +209,7 @@ async def accept_invite(
 async def ensure_member_for_user(
     session: AsyncSession, user: User,
 ) -> OrganizationMember:
+    """Ensure a user has some membership, creating one if necessary."""
     existing = await get_active_membership(session, user)
     if existing is not None:
         return existing
@@ -237,10 +247,12 @@ async def ensure_member_for_user(
 
 
 def member_all_boards_read(member: OrganizationMember) -> bool:
+    """Return whether the member has organization-wide read access."""
     return member.all_boards_read or member.all_boards_write
 
 
 def member_all_boards_write(member: OrganizationMember) -> bool:
+    """Return whether the member has organization-wide write access."""
     return member.all_boards_write
 
 
@@ -251,6 +263,7 @@ async def has_board_access(
     board: Board,
     write: bool,
 ) -> bool:
+    """Return whether a member has board access for the requested mode."""
     if member.organization_id != board.organization_id:
         return False
     if write:
@@ -276,6 +289,7 @@ async def require_board_access(
     board: Board,
     write: bool,
 ) -> OrganizationMember:
+    """Require board access for a user and return matching membership."""
     member = await get_member(
         session, user_id=user.id, organization_id=board.organization_id,
     )
@@ -293,6 +307,7 @@ async def require_board_access(
 def board_access_filter(
     member: OrganizationMember, *, write: bool,
 ) -> ColumnElement[bool]:
+    """Build a SQL filter expression for boards visible to a member."""
     if write and member_all_boards_write(member):
         return col(Board.organization_id) == member.organization_id
     if not write and member_all_boards_read(member):
@@ -320,6 +335,7 @@ async def list_accessible_board_ids(
     member: OrganizationMember,
     write: bool,
 ) -> list[UUID]:
+    """List board ids accessible to a member for read or write mode."""
     if (write and member_all_boards_write(member)) or (
         not write and member_all_boards_read(member)
     ):
@@ -354,6 +370,7 @@ async def apply_member_access_update(
     member: OrganizationMember,
     update: OrganizationMemberAccessUpdate,
 ) -> None:
+    """Replace explicit member board-access rows from an access update."""
     now = utcnow()
     member.all_boards_read = update.all_boards_read
     member.all_boards_write = update.all_boards_write
@@ -390,6 +407,7 @@ async def apply_invite_board_access(
     invite: OrganizationInvite,
     entries: Iterable[OrganizationBoardAccessSpec],
 ) -> None:
+    """Replace explicit invite board-access rows for an invite."""
     await crud.delete_where(
         session,
         OrganizationInviteBoardAccess,
@@ -414,10 +432,12 @@ async def apply_invite_board_access(
 
 
 def normalize_invited_email(email: str) -> str:
+    """Normalize an invited email address for storage/comparison."""
     return email.strip().lower()
 
 
 def normalize_role(role: str) -> str:
+    """Normalize a role string and default empty values to `member`."""
     return role.strip().lower() or "member"
 
 
@@ -433,6 +453,7 @@ async def apply_invite_to_member(
     member: OrganizationMember,
     invite: OrganizationInvite,
 ) -> None:
+    """Apply invite role/access grants onto an existing organization member."""
     now = utcnow()
     member_changed = False
     invite_role = normalize_role(invite.role or "member")

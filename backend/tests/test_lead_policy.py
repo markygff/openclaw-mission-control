@@ -1,3 +1,5 @@
+# ruff: noqa
+
 import hashlib
 
 from app.services.lead_policy import (

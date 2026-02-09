@@ -1,15 +1,16 @@
+"""Approval listing, streaming, creation, and update endpoints."""
+
 from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import asc, case, func, or_
 from sqlmodel import col, select
-from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import (
@@ -23,13 +24,32 @@ from app.core.time import utcnow
 from app.db.pagination import paginate
 from app.db.session import async_session_maker, get_session
 from app.models.approvals import Approval
-from app.models.boards import Board
-from app.schemas.approvals import ApprovalCreate, ApprovalRead, ApprovalStatus, ApprovalUpdate
+from app.schemas.approvals import (
+    ApprovalCreate,
+    ApprovalRead,
+    ApprovalStatus,
+    ApprovalUpdate,
+)
 from app.schemas.pagination import DefaultLimitOffsetPage
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
+    from app.models.boards import Board
 
 router = APIRouter(prefix="/boards/{board_id}/approvals", tags=["approvals"])
 
 TASK_ID_KEYS: tuple[str, ...] = ("task_id", "taskId", "taskID")
+STREAM_POLL_SECONDS = 2
+STATUS_FILTER_QUERY = Query(default=None, alias="status")
+SINCE_QUERY = Query(default=None)
+BOARD_READ_DEP = Depends(get_board_for_actor_read)
+BOARD_WRITE_DEP = Depends(get_board_for_actor_write)
+BOARD_USER_WRITE_DEP = Depends(get_board_for_user_write)
+SESSION_DEP = Depends(get_session)
+ACTOR_DEP = Depends(require_admin_or_agent)
 
 
 def _extract_task_id(payload: dict[str, object] | None) -> UUID | None:
@@ -68,7 +88,10 @@ def _approval_updated_at(approval: Approval) -> datetime:
 
 
 def _serialize_approval(approval: Approval) -> dict[str, object]:
-    return ApprovalRead.model_validate(approval, from_attributes=True).model_dump(mode="json")
+    return ApprovalRead.model_validate(
+        approval,
+        from_attributes=True,
+    ).model_dump(mode="json")
 
 
 async def _fetch_approval_events(
@@ -82,7 +105,7 @@ async def _fetch_approval_events(
             or_(
                 col(Approval.created_at) >= since,
                 col(Approval.resolved_at) >= since,
-            )
+            ),
         )
         .order_by(asc(col(Approval.created_at)))
     )
@@ -91,11 +114,12 @@ async def _fetch_approval_events(
 
 @router.get("", response_model=DefaultLimitOffsetPage[ApprovalRead])
 async def list_approvals(
-    status_filter: ApprovalStatus | None = Query(default=None, alias="status"),
-    board: Board = Depends(get_board_for_actor_read),
-    session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    status_filter: ApprovalStatus | None = STATUS_FILTER_QUERY,
+    board: Board = BOARD_READ_DEP,
+    session: AsyncSession = SESSION_DEP,
+    _actor: ActorContext = ACTOR_DEP,
 ) -> DefaultLimitOffsetPage[ApprovalRead]:
+    """List approvals for a board, optionally filtering by status."""
     statement = Approval.objects.filter_by(board_id=board.id)
     if status_filter:
         statement = statement.filter(col(Approval.status) == status_filter)
@@ -106,10 +130,11 @@ async def list_approvals(
 @router.get("/stream")
 async def stream_approvals(
     request: Request,
-    board: Board = Depends(get_board_for_actor_read),
-    actor: ActorContext = Depends(require_admin_or_agent),
-    since: str | None = Query(default=None),
+    board: Board = BOARD_READ_DEP,
+    _actor: ActorContext = ACTOR_DEP,
+    since: str | None = SINCE_QUERY,
 ) -> EventSourceResponse:
+    """Stream approval updates for a board using server-sent events."""
     since_dt = _parse_since(since) or utcnow()
     last_seen = since_dt
 
@@ -125,12 +150,14 @@ async def stream_approvals(
                         await session.exec(
                             select(func.count(col(Approval.id)))
                             .where(col(Approval.board_id) == board.id)
-                            .where(col(Approval.status) == "pending")
+                            .where(col(Approval.status) == "pending"),
                         )
-                    ).one()
+                    ).one(),
                 )
                 task_ids = {
-                    approval.task_id for approval in approvals if approval.task_id is not None
+                    approval.task_id
+                    for approval in approvals
+                    if approval.task_id is not None
                 }
                 counts_by_task_id: dict[UUID, tuple[int, int]] = {}
                 if task_ids:
@@ -140,22 +167,27 @@ async def stream_approvals(
                                 col(Approval.task_id),
                                 func.count(col(Approval.id)).label("total"),
                                 func.sum(
-                                    case((col(Approval.status) == "pending", 1), else_=0)
+                                    case(
+                                        (col(Approval.status) == "pending", 1),
+                                        else_=0,
+                                    ),
                                 ).label("pending"),
                             )
                             .where(col(Approval.board_id) == board.id)
                             .where(col(Approval.task_id).in_(task_ids))
-                            .group_by(col(Approval.task_id))
-                        )
+                            .group_by(col(Approval.task_id)),
+                        ),
                     )
                     for task_id, total, pending in rows:
                         if task_id is None:
                             continue
-                        counts_by_task_id[task_id] = (int(total or 0), int(pending or 0))
+                        counts_by_task_id[task_id] = (
+                            int(total or 0),
+                            int(pending or 0),
+                        )
             for approval in approvals:
                 updated_at = _approval_updated_at(approval)
-                if updated_at > last_seen:
-                    last_seen = updated_at
+                last_seen = max(updated_at, last_seen)
                 payload: dict[str, object] = {
                     "approval": _serialize_approval(approval),
                     "pending_approvals_count": pending_approvals_count,
@@ -170,7 +202,7 @@ async def stream_approvals(
                             "approvals_pending_count": pending,
                         }
                 yield {"event": "approval", "data": json.dumps(payload)}
-            await asyncio.sleep(2)
+            await asyncio.sleep(STREAM_POLL_SECONDS)
 
     return EventSourceResponse(event_generator(), ping=15)
 
@@ -178,10 +210,11 @@ async def stream_approvals(
 @router.post("", response_model=ApprovalRead)
 async def create_approval(
     payload: ApprovalCreate,
-    board: Board = Depends(get_board_for_actor_write),
-    session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    board: Board = BOARD_WRITE_DEP,
+    session: AsyncSession = SESSION_DEP,
+    _actor: ActorContext = ACTOR_DEP,
 ) -> Approval:
+    """Create an approval for a board."""
     task_id = payload.task_id or _extract_task_id(payload.payload)
     approval = Approval(
         board_id=board.id,
@@ -203,9 +236,10 @@ async def create_approval(
 async def update_approval(
     approval_id: str,
     payload: ApprovalUpdate,
-    board: Board = Depends(get_board_for_user_write),
-    session: AsyncSession = Depends(get_session),
+    board: Board = BOARD_USER_WRITE_DEP,
+    session: AsyncSession = SESSION_DEP,
 ) -> Approval:
+    """Update an approval's status and resolution timestamp."""
     approval = await Approval.objects.by_id(approval_id).first(session)
     if approval is None or approval.board_id != board.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)

@@ -1,17 +1,18 @@
+"""Activity listing and task-comment feed endpoints."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 from collections import deque
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import asc, desc, func
 from sqlmodel import col, select
-from sqlmodel.ext.asyncio.session import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import ActorContext, require_admin_or_agent, require_org_member
@@ -22,7 +23,10 @@ from app.models.activity_events import ActivityEvent
 from app.models.agents import Agent
 from app.models.boards import Board
 from app.models.tasks import Task
-from app.schemas.activity_events import ActivityEventRead, ActivityTaskCommentFeedItemRead
+from app.schemas.activity_events import (
+    ActivityEventRead,
+    ActivityTaskCommentFeedItemRead,
+)
 from app.schemas.pagination import DefaultLimitOffsetPage
 from app.services.organizations import (
     OrganizationContext,
@@ -30,9 +34,21 @@ from app.services.organizations import (
     list_accessible_board_ids,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlmodel.ext.asyncio.session import AsyncSession
+
 router = APIRouter(prefix="/activity", tags=["activity"])
 
 SSE_SEEN_MAX = 2000
+STREAM_POLL_SECONDS = 2
+SESSION_DEP = Depends(get_session)
+ACTOR_DEP = Depends(require_admin_or_agent)
+ORG_MEMBER_DEP = Depends(require_org_member)
+BOARD_ID_QUERY = Query(default=None)
+SINCE_QUERY = Query(default=None)
+_RUNTIME_TYPE_REFERENCES = (UUID,)
 
 
 def _parse_since(value: str | None) -> datetime | None:
@@ -110,9 +126,10 @@ async def _fetch_task_comment_events(
 
 @router.get("", response_model=DefaultLimitOffsetPage[ActivityEventRead])
 async def list_activity(
-    session: AsyncSession = Depends(get_session),
-    actor: ActorContext = Depends(require_admin_or_agent),
+    session: AsyncSession = SESSION_DEP,
+    actor: ActorContext = ACTOR_DEP,
 ) -> DefaultLimitOffsetPage[ActivityEventRead]:
+    """List activity events visible to the calling actor."""
     statement = select(ActivityEvent)
     if actor.actor_type == "agent" and actor.agent:
         statement = statement.where(ActivityEvent.agent_id == actor.agent.id)
@@ -124,9 +141,10 @@ async def list_activity(
         if not board_ids:
             statement = statement.where(col(ActivityEvent.id).is_(None))
         else:
-            statement = statement.join(Task, col(ActivityEvent.task_id) == col(Task.id)).where(
-                col(Task.board_id).in_(board_ids)
-            )
+            statement = statement.join(
+                Task,
+                col(ActivityEvent.task_id) == col(Task.id),
+            ).where(col(Task.board_id).in_(board_ids))
     statement = statement.order_by(desc(col(ActivityEvent.created_at)))
     return await paginate(session, statement)
 
@@ -136,10 +154,11 @@ async def list_activity(
     response_model=DefaultLimitOffsetPage[ActivityTaskCommentFeedItemRead],
 )
 async def list_task_comment_feed(
-    board_id: UUID | None = Query(default=None),
-    session: AsyncSession = Depends(get_session),
-    ctx: OrganizationContext = Depends(require_org_member),
+    board_id: UUID | None = BOARD_ID_QUERY,
+    session: AsyncSession = SESSION_DEP,
+    ctx: OrganizationContext = ORG_MEMBER_DEP,
 ) -> DefaultLimitOffsetPage[ActivityTaskCommentFeedItemRead]:
+    """List task-comment feed items for accessible boards."""
     statement = (
         select(ActivityEvent, Task, Board, Agent)
         .join(Task, col(ActivityEvent.task_id) == col(Task.id))
@@ -161,7 +180,10 @@ async def list_task_comment_feed(
 
     def _transform(items: Sequence[Any]) -> Sequence[Any]:
         rows = cast(Sequence[tuple[ActivityEvent, Task, Board, Agent | None]], items)
-        return [_feed_item(event, task, board, agent) for event, task, board, agent in rows]
+        return [
+            _feed_item(event, task, board, agent)
+            for event, task, board, agent in rows
+        ]
 
     return await paginate(session, statement, transformer=_transform)
 
@@ -169,13 +191,18 @@ async def list_task_comment_feed(
 @router.get("/task-comments/stream")
 async def stream_task_comment_feed(
     request: Request,
-    board_id: UUID | None = Query(default=None),
-    since: str | None = Query(default=None),
-    session: AsyncSession = Depends(get_session),
-    ctx: OrganizationContext = Depends(require_org_member),
+    board_id: UUID | None = BOARD_ID_QUERY,
+    since: str | None = SINCE_QUERY,
+    db_session: AsyncSession = SESSION_DEP,
+    ctx: OrganizationContext = ORG_MEMBER_DEP,
 ) -> EventSourceResponse:
+    """Stream task-comment events for accessible boards."""
     since_dt = _parse_since(since) or utcnow()
-    board_ids = await list_accessible_board_ids(session, member=ctx.member, write=False)
+    board_ids = await list_accessible_board_ids(
+        db_session,
+        member=ctx.member,
+        write=False,
+    )
     allowed_ids = set(board_ids)
     if board_id is not None and board_id not in allowed_ids:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
@@ -187,11 +214,15 @@ async def stream_task_comment_feed(
         while True:
             if await request.is_disconnected():
                 break
-            async with async_session_maker() as session:
+            async with async_session_maker() as stream_session:
                 if board_id is not None:
-                    rows = await _fetch_task_comment_events(session, last_seen, board_id=board_id)
+                    rows = await _fetch_task_comment_events(
+                        stream_session,
+                        last_seen,
+                        board_id=board_id,
+                    )
                 elif allowed_ids:
-                    rows = await _fetch_task_comment_events(session, last_seen)
+                    rows = await _fetch_task_comment_events(stream_session, last_seen)
                     rows = [row for row in rows if row[1].board_id in allowed_ids]
                 else:
                     rows = []
@@ -204,10 +235,16 @@ async def stream_task_comment_feed(
                 if len(seen_queue) > SSE_SEEN_MAX:
                     oldest = seen_queue.popleft()
                     seen_ids.discard(oldest)
-                if event.created_at > last_seen:
-                    last_seen = event.created_at
-                payload = {"comment": _feed_item(event, task, board, agent).model_dump(mode="json")}
+                last_seen = max(event.created_at, last_seen)
+                payload = {
+                    "comment": _feed_item(
+                        event,
+                        task,
+                        board,
+                        agent,
+                    ).model_dump(mode="json"),
+                }
                 yield {"event": "comment", "data": json.dumps(payload)}
-            await asyncio.sleep(2)
+            await asyncio.sleep(STREAM_POLL_SECONDS)
 
     return EventSourceResponse(event_generator(), ping=15)

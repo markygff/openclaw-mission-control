@@ -1,3 +1,5 @@
+"""Dashboard metric aggregation endpoints."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,10 +34,16 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 
 OFFLINE_AFTER = timedelta(minutes=10)
 ERROR_EVENT_PATTERN = "%failed"
+_RUNTIME_TYPE_REFERENCES = (UUID, AsyncSession)
+RANGE_QUERY = Query(default="24h")
+SESSION_DEP = Depends(get_session)
+ORG_MEMBER_DEP = Depends(require_org_member)
 
 
 @dataclass(frozen=True)
 class RangeSpec:
+    """Resolved time-range specification for metric aggregation."""
+
     key: Literal["24h", "7d"]
     start: datetime
     end: datetime
@@ -80,7 +88,8 @@ def _build_buckets(range_spec: RangeSpec) -> list[datetime]:
 
 
 def _series_from_mapping(
-    range_spec: RangeSpec, mapping: dict[datetime, float]
+    range_spec: RangeSpec,
+    mapping: dict[datetime, float],
 ) -> DashboardRangeSeries:
     points = [
         DashboardSeriesPoint(period=bucket, value=float(mapping.get(bucket, 0)))
@@ -94,7 +103,8 @@ def _series_from_mapping(
 
 
 def _wip_series_from_mapping(
-    range_spec: RangeSpec, mapping: dict[datetime, dict[str, int]]
+    range_spec: RangeSpec,
+    mapping: dict[datetime, dict[str, int]],
 ) -> DashboardWipRangeSeries:
     points: list[DashboardWipPoint] = []
     for bucket in _build_buckets(range_spec):
@@ -105,7 +115,7 @@ def _wip_series_from_mapping(
                 inbox=values.get("inbox", 0),
                 in_progress=values.get("in_progress", 0),
                 review=values.get("review", 0),
-            )
+            ),
         )
     return DashboardWipRangeSeries(
         range=range_spec.key,
@@ -115,7 +125,9 @@ def _wip_series_from_mapping(
 
 
 async def _query_throughput(
-    session: AsyncSession, range_spec: RangeSpec, board_ids: list[UUID]
+    session: AsyncSession,
+    range_spec: RangeSpec,
+    board_ids: list[UUID],
 ) -> DashboardRangeSeries:
     bucket_col = func.date_trunc(range_spec.bucket, Task.updated_at).label("bucket")
     statement = (
@@ -135,7 +147,9 @@ async def _query_throughput(
 
 
 async def _query_cycle_time(
-    session: AsyncSession, range_spec: RangeSpec, board_ids: list[UUID]
+    session: AsyncSession,
+    range_spec: RangeSpec,
+    board_ids: list[UUID],
 ) -> DashboardRangeSeries:
     bucket_col = func.date_trunc(range_spec.bucket, Task.updated_at).label("bucket")
     in_progress = cast(Task.in_progress_at, DateTime)
@@ -158,9 +172,14 @@ async def _query_cycle_time(
 
 
 async def _query_error_rate(
-    session: AsyncSession, range_spec: RangeSpec, board_ids: list[UUID]
+    session: AsyncSession,
+    range_spec: RangeSpec,
+    board_ids: list[UUID],
 ) -> DashboardRangeSeries:
-    bucket_col = func.date_trunc(range_spec.bucket, ActivityEvent.created_at).label("bucket")
+    bucket_col = func.date_trunc(
+        range_spec.bucket,
+        ActivityEvent.created_at,
+    ).label("bucket")
     error_case = case(
         (
             col(ActivityEvent.event_type).like(ERROR_EVENT_PATTERN),
@@ -190,7 +209,9 @@ async def _query_error_rate(
 
 
 async def _query_wip(
-    session: AsyncSession, range_spec: RangeSpec, board_ids: list[UUID]
+    session: AsyncSession,
+    range_spec: RangeSpec,
+    board_ids: list[UUID],
 ) -> DashboardWipRangeSeries:
     bucket_col = func.date_trunc(range_spec.bucket, Task.updated_at).label("bucket")
     inbox_case = case((col(Task.status) == "inbox", 1), else_=0)
@@ -222,7 +243,10 @@ async def _query_wip(
     return _wip_series_from_mapping(range_spec, mapping)
 
 
-async def _median_cycle_time_7d(session: AsyncSession, board_ids: list[UUID]) -> float | None:
+async def _median_cycle_time_7d(
+    session: AsyncSession,
+    board_ids: list[UUID],
+) -> float | None:
     now = utcnow()
     start = now - timedelta(days=7)
     in_progress = cast(Task.in_progress_at, DateTime)
@@ -248,7 +272,9 @@ async def _median_cycle_time_7d(session: AsyncSession, board_ids: list[UUID]) ->
 
 
 async def _error_rate_kpi(
-    session: AsyncSession, range_spec: RangeSpec, board_ids: list[UUID]
+    session: AsyncSession,
+    range_spec: RangeSpec,
+    board_ids: list[UUID],
 ) -> float:
     error_case = case(
         (
@@ -302,12 +328,13 @@ async def _tasks_in_progress(session: AsyncSession, board_ids: list[UUID]) -> in
 
 @router.get("/dashboard", response_model=DashboardMetrics)
 async def dashboard_metrics(
-    range: Literal["24h", "7d"] = Query(default="24h"),
-    session: AsyncSession = Depends(get_session),
-    ctx: OrganizationContext = Depends(require_org_member),
+    range_key: Literal["24h", "7d"] = RANGE_QUERY,
+    session: AsyncSession = SESSION_DEP,
+    ctx: OrganizationContext = ORG_MEMBER_DEP,
 ) -> DashboardMetrics:
-    primary = _resolve_range(range)
-    comparison = _comparison_range(range)
+    """Return dashboard KPIs and time-series data for accessible boards."""
+    primary = _resolve_range(range_key)
+    comparison = _comparison_range(range_key)
     board_ids = await list_accessible_board_ids(session, member=ctx.member, write=False)
 
     throughput_primary = await _query_throughput(session, primary, board_ids)
