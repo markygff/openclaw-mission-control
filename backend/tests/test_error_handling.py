@@ -38,6 +38,31 @@ def test_request_validation_error_includes_request_id():
     assert resp.headers.get(REQUEST_ID_HEADER) == body["request_id"]
 
 
+def test_request_validation_error_handles_bytes_input_without_500():
+    class Payload(BaseModel):
+        content: str
+
+    app = FastAPI()
+    install_error_handling(app)
+
+    @app.put("/needs-object")
+    def needs_object(payload: Payload) -> dict[str, str]:
+        return {"content": payload.content}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.put(
+        "/needs-object",
+        content=b"plain-text-body",
+        headers={"content-type": "text/plain"},
+    )
+
+    assert resp.status_code == 422
+    body = resp.json()
+    assert isinstance(body.get("detail"), list)
+    assert isinstance(body.get("request_id"), str) and body["request_id"]
+    assert resp.headers.get(REQUEST_ID_HEADER) == body["request_id"]
+
+
 def test_http_exception_includes_request_id():
     app = FastAPI()
     install_error_handling(app)
