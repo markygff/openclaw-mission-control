@@ -19,6 +19,21 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+_ERROR_DETAIL_MAX_CHARS = 500
+
+
+def _safe_error_detail(resp: httpx.Response) -> str:
+    """Return a safe, truncated error detail string for exceptions/logs."""
+    try:
+        text = (resp.text or "").strip()
+    except Exception:
+        return ""
+    if not text:
+        return ""
+    if len(text) <= _ERROR_DETAIL_MAX_CHARS:
+        return text
+    return f"{text[: _ERROR_DETAIL_MAX_CHARS - 3]}..."
+
 GITHUB_API_BASE_URL = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
 
@@ -79,7 +94,9 @@ async def get_pull_request_head_sha(pr: ParsedPullRequest) -> str:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url, headers=_auth_headers())
     if resp.status_code >= 400:
-        raise GitHubClientError(f"GitHub PR lookup failed: {resp.status_code} {resp.text}")
+        detail = _safe_error_detail(resp)
+        suffix = f" {detail}" if detail else ""
+        raise GitHubClientError(f"GitHub PR lookup failed: {resp.status_code}{suffix}")
     data = resp.json()
     head = data.get("head")
     if not isinstance(head, dict) or not isinstance(head.get("sha"), str):
@@ -95,8 +112,10 @@ async def _find_check_run_id(*, owner: str, repo: str, ref: str, check_name: str
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url, headers=_auth_headers(), params=params)
     if resp.status_code >= 400:
+        detail = _safe_error_detail(resp)
+        suffix = f" {detail}" if detail else ""
         raise GitHubClientError(
-            f"GitHub check-runs lookup failed: {resp.status_code} {resp.text}",
+            f"GitHub check-runs lookup failed: {resp.status_code}{suffix}",
         )
     payload = resp.json()
     runs = payload.get("check_runs")
@@ -165,8 +184,10 @@ async def upsert_check_run(
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, headers={**_auth_headers(), "Accept": "application/vnd.github+json"}, json=payload)
         if resp.status_code >= 400:
+            detail = _safe_error_detail(resp)
+            suffix = f" {detail}" if detail else ""
             raise GitHubClientError(
-                f"GitHub check-run create failed: {resp.status_code} {resp.text}",
+                f"GitHub check-run create failed: {resp.status_code}{suffix}",
             )
         logger.info(
             "github.check_run.created",
@@ -188,8 +209,10 @@ async def upsert_check_run(
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.patch(url, headers=_auth_headers(), json=patch_payload)
     if resp.status_code >= 400:
+        detail = _safe_error_detail(resp)
+        suffix = f" {detail}" if detail else ""
         raise GitHubClientError(
-            f"GitHub check-run update failed: {resp.status_code} {resp.text}",
+            f"GitHub check-run update failed: {resp.status_code}{suffix}",
         )
     logger.info(
         "github.check_run.updated",
