@@ -20,16 +20,8 @@ services:
         fromDatabase:
           name: mission-control-db
           property: connectionString
-      - key: REDIS_URL
-        fromDatabase:
-          name: mission-control-redis
-          property: connectionString
-
 databases:
   - name: mission-control-db
     databaseName: mission_control
     user: mcuser
-    plan: free
-
-  - name: mission-control-redis
     plan: free
