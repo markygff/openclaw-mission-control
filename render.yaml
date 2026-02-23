@@ -28,7 +28,7 @@ services:
 databases:
   - name: mission-control-db
     databaseName: mission_control
-    user: postgres
+    user: mcuser
     plan: free
 
   - name: mission-control-redis
